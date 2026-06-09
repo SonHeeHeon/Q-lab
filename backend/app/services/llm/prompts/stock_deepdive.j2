@@ -1,0 +1,23 @@
+{# =========================================================================
+   Template: stock_deepdive.j2
+
+   Purpose:
+     On-demand deep analysis when the user taps "Ask AI" on a stock
+     detail screen. Returns a structured opinion in 4 sections.
+
+   Variables:
+     - code, name, sector, industry
+     - factors_5y    : list[ {date, factor, value} ]   (recent 5 yr)
+     - recent_news   : list[ {date, headline} ]        (optional, may be empty)
+     - peers         : list[ {code, name, PER, PBR, ROE} ]
+
+   Output expected: 한국어 마크다운, 섹션은 (1) 한 줄 요약 (2) 강점 (3) 리스크 (4) 결론.
+   ========================================================================= #}
+{{ name }} ({{ code }}) 종목에 대해 다음 정보를 바탕으로 한국어 마크다운으로 분석:
+
+섹터: {{ sector }} / 산업: {{ industry }}
+최근 5년 팩터: {{ factors_5y }}
+동종업계 비교: {{ peers }}
+최근 뉴스: {{ recent_news }}
+
+섹션: 1) 한 줄 요약  2) 강점  3) 리스크  4) 결론.

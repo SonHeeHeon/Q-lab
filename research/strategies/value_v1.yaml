@@ -1,0 +1,26 @@
+name: value_v1
+description: "Low PER + Low PBR + High ROE, top-20 in KOSPI200, quarterly rebalance"
+universe: KOSPI200
+rebalance_freq: QUARTERLY
+start_date: 2016-01-01
+end_date: 2025-12-31
+top_n: 20
+
+factors:
+  - factor: PER
+    weight: -1.0
+    transform: ZSCORE
+  - factor: PBR
+    weight: -0.8
+    transform: ZSCORE
+  - factor: ROE
+    weight: 1.0
+    transform: ZSCORE
+
+filters:
+  - field: market_cap
+    op: GTE
+    value: 100000000000
+  - field: trading_days_30d
+    op: GTE
+    value: 25

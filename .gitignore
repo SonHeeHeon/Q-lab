@@ -1,0 +1,74 @@
+# =============================================================================
+# Q-Lab — Git Ignore
+# =============================================================================
+
+# --- secrets / env ---
+.env
+.env.local
+.env.*.local
+
+# --- python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.python-version
+.venv/
+venv/
+
+# --- uv ---
+uv.lock
+
+# --- runtime data (DBs, tokens, caches) ---
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+data/tokens/*
+!data/tokens/.gitkeep
+data/cache/*
+!data/cache/.gitkeep
+
+# --- local agent / runtime logs ---
+.claude/settings.local.json
+logs/
+
+# --- research artifacts ---
+research/reports/runs/*
+!research/reports/runs/.gitkeep
+research/reports/leaderboard.csv
+research/reports/optimization/*
+!research/reports/optimization/.gitkeep
+research/reports/optuna_studies.db
+research/notebooks/*.ipynb
+!research/notebooks/01_factor_exploration.ipynb
+!research/notebooks/02_data_visualization.ipynb
+research/notebooks/.ipynb_checkpoints/
+
+# --- flutter / dart ---
+app/.dart_tool/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+app/.packages
+app/.pub-cache/
+app/.pub/
+app/build/
+app/ios/Pods/
+app/android/.gradle/
+app/android/local.properties
+app/ios/Flutter/Flutter.framework
+app/ios/Flutter/Flutter.podspec
+app/macos/Flutter/ephemeral/
+app/web/
+
+# --- IDE ---
+.vscode/
+.idea/
+*.iml
+.DS_Store

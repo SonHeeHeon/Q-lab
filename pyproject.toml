@@ -1,0 +1,101 @@
+# =============================================================================
+# Q-Lab — Python Project Configuration
+# =============================================================================
+# This file defines the Python project for BOTH `backend/` (FastAPI service)
+# AND `research/` (experiment lab). They share one virtual environment so that
+# `shared/` modules and the research backtest engine can be imported by the
+# backend without cross-package juggling.
+#
+# Package manager: uv (https://github.com/astral-sh/uv)
+#   $ uv sync                 # install all deps from lockfile
+#   $ uv add <package>        # add a new runtime dep
+#   $ uv add --dev <package>  # add a new dev dep
+# =============================================================================
+
+[project]
+name = "qlab"
+version = "0.1.0"
+description = "Q-Lab (QuantLab) — personal cross-platform stock app integrating KIS Open API, quant backtesting, LLM analysis."
+requires-python = ">=3.12"
+readme = "README.md"
+
+dependencies = [
+    "aiosqlite",
+    "aiohttp",
+    "alembic",
+    "apscheduler",
+    "certifi",
+    "fastapi",
+    "finance-datareader",
+    "greenlet",
+    "ipykernel",
+    "jinja2",
+    "jupyterlab",
+    "lxml",
+    "matplotlib",
+    "openai",
+    "optuna",
+    "pandas",
+    "pydantic>=2",
+    "pydantic-settings",
+    "pykrx",
+    "python-dotenv",
+    "pyyaml",
+    "scikit-learn",
+    "seaborn",
+    "sqlalchemy>=2.0",
+    "tqdm",
+    "uvicorn[standard]",
+    "websockets",
+    "yfinance",
+    # --- web framework ---
+    # "fastapi",
+    # "uvicorn[standard]",
+    # "websockets",
+    # "aiohttp",
+    # --- data / db ---
+    # "sqlalchemy>=2.0",
+    # "alembic",
+    # "pydantic>=2",
+    # "pydantic-settings",
+    # --- scheduling / logging ---
+    # "apscheduler",
+    # "loguru",
+    # --- market data ---
+    # "pykrx",
+    # "finance-datareader",
+    # --- LLM / notifications ---
+    # "openai",
+    # "python-telegram-bot",
+    # --- backtest / optimization ---
+    # "pandas",
+    # "numpy",
+    # "optuna",
+    # "pyyaml",
+    # "jinja2",
+    # "matplotlib",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    # "black",
+    # "ruff",
+    # "mypy",
+]
+
+[tool.black]
+line-length = 88
+target-version = ["py312"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["backend/tests", "research/tests"]

@@ -1,0 +1,12 @@
+다음은 {{ analysis_date }} 기준 {{ strategy_name }} 전략이 선별한 저평가 후보입니다.
+
+요청:
+- 한국어로 간결하게 작성하세요.
+- 전체 요약 2문장 뒤, 각 종목별로 핵심 근거와 리스크를 1문장씩 적으세요.
+- 투자 조언처럼 단정하지 말고, 데이터 기반 관찰로 표현하세요.
+
+후보:
+{% for stock in stocks %}
+{{ loop.index }}. {{ stock.code }} {{ stock.name }}{% if stock.sector %} ({{ stock.sector }}){% endif %}
+   score={{ "%.4f"|format(stock.score) }}
+{% endfor %}

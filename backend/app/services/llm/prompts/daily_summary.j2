@@ -1,0 +1,19 @@
+{# =========================================================================
+   Template: daily_summary.j2
+
+   Purpose:
+     One-paragraph daily market summary for the Telegram report.
+
+   Variables:
+     - date           : str
+     - kospi_change   : float (pct)
+     - kosdaq_change  : float (pct)
+     - top_movers     : list[{code, name, change_pct}]
+     - portfolio_pct  : float (today's portfolio P&L)
+
+   Output expected: 한국어 3~4문장. 시장 톤 + 핵심 섹터 + 포트폴리오 코멘트.
+   ========================================================================= #}
+{{ date }} 한국 시장 요약을 한국어 3~4문장으로 작성하세요.
+KOSPI {{ kospi_change }}% / KOSDAQ {{ kosdaq_change }}%.
+주요 변동 종목: {{ top_movers }}.
+사용자 포트폴리오 일간 손익률: {{ portfolio_pct }}%.

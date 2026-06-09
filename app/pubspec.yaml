@@ -1,0 +1,51 @@
+# =============================================================================
+# Q-Lab — Flutter Project Manifest
+# =============================================================================
+# Single codebase for Web / iOS / Android.
+# State: Riverpod 2.x. HTTP: Dio. Routing: go_router. Charts: fl_chart.
+#
+#   $ flutter pub get
+#   $ flutter run -d chrome --dart-define=API_BASE_URL=http://localhost:8000 \
+#                            --dart-define=USE_MOCK=true
+# =============================================================================
+
+name: qlab
+description: Q-Lab (QuantLab) — personal stock app with KIS-integrated portfolio, quant insights, and LLM analysis.
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+  flutter: ">=3.22.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+
+  # --- state management ---
+  flutter_riverpod: ^2.5.1
+
+  # --- routing ---
+  go_router: ^14.2.7
+
+  # --- http / ws ---
+  dio: ^5.7.0
+  web_socket_channel: ^3.0.1
+
+  # --- charts ---
+  fl_chart: ^0.69.0
+
+  # --- misc ---
+  intl: ^0.19.0
+  collection: ^1.18.0
+  shared_preferences: ^2.3.2
+  flutter_markdown: ^0.7.4+1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

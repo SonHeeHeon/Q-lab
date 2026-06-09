@@ -1,0 +1,25 @@
+# =============================================================================
+# Q-Lab — Docker Compose (optional)
+# =============================================================================
+# Local single-process backend container. SQLite files and config are mounted
+# from the host. Use only if you prefer container-based dev; native `uvicorn`
+# is also supported.
+#
+#   $ docker compose up backend
+# =============================================================================
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: qlab-backend
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./backend:/app/backend
+      - ./shared:/app/shared
+      - ./research:/app/research
+    command: uv run uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
