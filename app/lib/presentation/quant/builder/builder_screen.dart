@@ -276,8 +276,10 @@ class _FactorsSection extends StatelessWidget {
               alignment: Alignment.centerLeft,
               child: TextButton.icon(
                 icon: const Icon(Icons.add),
-                label: const Text('팩터 추가'),
-                onPressed: notifier.addFactor,
+                label: Text(notifier.catalogExhausted
+                    ? '모든 팩터 사용 중'
+                    : '팩터 추가'),
+                onPressed: notifier.catalogExhausted ? null : notifier.addFactor,
               ),
             ),
           ],

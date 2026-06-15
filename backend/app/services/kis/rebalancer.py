@@ -8,6 +8,7 @@ from decimal import Decimal, ROUND_FLOOR
 
 from backend.app.core.config import settings
 from backend.app.schemas.portfolio import OrderRequest, OrderResponse, OrderType
+from backend.app.services.automation.safety import assert_order_allowed
 from backend.app.services.kis.rest_client import KISRestClient
 from shared.domain.account import AccountType
 from shared.domain.trade import TradeDirection
@@ -80,6 +81,14 @@ async def build_rebalance_plan(
         current_values[code] = value
         current_quantities[code] = position.quantity
         prices[code] = price
+
+    await _fill_missing_target_prices(
+        account_type=account_type,
+        target_codes=set(weights) - set(prices),
+        prices=prices,
+        kis_client=client,
+        warnings=warnings,
+    )
 
     summary_value = portfolio.summary.total_evaluation_amount
     if summary_value is None:
@@ -165,6 +174,10 @@ async def execute_rebalance_plan(
                 order.estimated_notional,
             )
             continue
+        assert_order_allowed(
+            estimated_notional=order.estimated_notional,
+            live_mode=True,
+        )
         submitted.append(await client.place_order(request))
 
     return RebalanceExecutionResult(
@@ -222,3 +235,29 @@ def _floor_quantity(value: Decimal, price: Decimal) -> int:
     if price <= 0:
         return 0
     return int((value / price).to_integral_value(rounding=ROUND_FLOOR))
+
+
+async def _fill_missing_target_prices(
+    *,
+    account_type: AccountType,
+    target_codes: set[str],
+    prices: dict[str, Decimal],
+    kis_client: KISRestClient,
+    warnings: list[str],
+) -> None:
+    if not target_codes:
+        return
+    if not hasattr(kis_client, "get_current_price"):
+        warnings.append("Skipped target price lookup: KIS client has no quote method.")
+        return
+
+    for code in sorted(target_codes):
+        try:
+            quote = await kis_client.get_current_price(account_type, code)
+        except Exception as exc:
+            warnings.append(f"Skipped BUY {code}: current price lookup failed: {exc}")
+            continue
+        if quote.current_price > 0:
+            prices[code] = quote.current_price
+        else:
+            warnings.append(f"Skipped BUY {code}: current price lookup returned zero.")

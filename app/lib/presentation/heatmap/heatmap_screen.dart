@@ -12,6 +12,7 @@ import 'package:intl/intl.dart';
 import '../../data/api/heatmap_api.dart';
 import '../../shared/widgets/treemap.dart';
 import 'heatmap_controller.dart';
+import 'session_badge.dart';
 
 final _date = DateFormat('yyyy-MM-dd');
 final _krw = NumberFormat('#,##0');
@@ -136,18 +137,30 @@ class _Body extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-          child: Text(
-            '${data.market} · ${data.groupBy} · '
-            '${data.asOf == null ? "-" : _date.format(data.asOf!.toLocal())} · '
-            '${stocks.length}종목',
-            style: theme.textTheme.bodySmall,
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '${data.market} · ${data.groupBy} · '
+                  '${data.asOf == null ? "-" : _date.format(data.asOf!.toLocal())} · '
+                  '${stocks.length}종목'
+                  '${data.source != null ? " · ${data.source}" : ""}',
+                  style: theme.textTheme.bodySmall,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: 8),
+              SessionBadge(response: data),
+            ],
           ),
         ),
         Expanded(
           child: Padding(
             padding: const EdgeInsets.all(8),
             child: Treemap<HeatmapNode>(
+              animate: true,
+              keyOf: (n) => n.id,
               items: [
                 for (final n in stocks)
                   TreemapItem<HeatmapNode>(

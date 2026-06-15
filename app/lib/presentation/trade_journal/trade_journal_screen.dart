@@ -143,7 +143,7 @@ Future<void> _writeJournalDialog(BuildContext context, WidgetRef ref, TradeLite 
               minLines: 4,
               autofocus: true,
               decoration: const InputDecoration(
-                labelText: '왜 ${''}이 거래를 했는가? (필수)',
+                labelText: '왜 이 거래를 했는가? (필수)',
                 hintText: '예: PER 8x 이하 + 분기 영업이익 +30% YoY. 가격 박스권 하단 진입.',
                 border: OutlineInputBorder(),
               ),

@@ -6,14 +6,24 @@ import asyncio
 import os
 import sqlite3
 from datetime import date as Date
+from datetime import datetime, time
 from pathlib import Path
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
 from backend.app.schemas.portfolio import ApiEnvelope
+from backend.app.services.kis.market_snapshot import (
+    HeatmapSnapshot,
+    MarketSession,
+    get_live_heatmap_snapshot,
+    get_market_session,
+    is_live_market_session,
+)
+from backend.app.core.config import settings
 from shared.db.session import research_db_path
 
 os.environ.setdefault("MPLCONFIGDIR", str(Path("/private/tmp/qlab-mplconfig")))
@@ -35,6 +45,9 @@ class HeatmapResponse(BaseModel):
     market: str
     group_by: str
     as_of: Date | None
+    updated_at: datetime | None = None
+    market_session: str = "CLOSED"
+    source: str = "research_db"
     nodes: list[HeatmapNode]
 
 
@@ -44,11 +57,30 @@ async def get_heatmap(
     group_by: Literal["sector", "industry"] = Query(default="sector"),
     as_of: Date | None = Query(default=None),
 ) -> ApiEnvelope[HeatmapResponse]:
+    session = get_market_session()
+    if (
+        market == "KOSPI"
+        and as_of is None
+        and is_live_market_session(session)
+    ):
+        snapshot = await get_live_heatmap_snapshot(
+            refresh_if_stale=settings.MARKET_SNAPSHOT_AUTOSTART
+        )
+        if snapshot.items:
+            response = await asyncio.to_thread(
+                _build_live_heatmap,
+                market,
+                group_by,
+                snapshot,
+            )
+            return ApiEnvelope(data=response, error=None)
+
     response = await asyncio.to_thread(
         _build_heatmap,
         market,
         group_by,
         as_of,
+        session,
     )
     return ApiEnvelope(data=response, error=None)
 
@@ -57,6 +89,7 @@ def _build_heatmap(
     market: str,
     group_by: str,
     as_of: Date | None,
+    market_session: MarketSession | None = None,
 ) -> HeatmapResponse:
     selected_date = as_of or _latest_price_date()
     if selected_date is None:
@@ -64,6 +97,9 @@ def _build_heatmap(
             market=market,
             group_by=group_by,
             as_of=None,
+            updated_at=None,
+            market_session=(market_session or get_market_session()).value,
+            source="research_db",
             nodes=[],
         )
 
@@ -117,6 +153,85 @@ def _build_heatmap(
         market=market,
         group_by=group_by,
         as_of=selected_date,
+        updated_at=_historical_updated_at(selected_date),
+        market_session=(market_session or get_market_session()).value,
+        source="research_db",
+        nodes=[root, *group_nodes, *stock_nodes],
+    )
+
+
+def _build_live_heatmap(
+    market: str,
+    group_by: str,
+    snapshot: HeatmapSnapshot,
+) -> HeatmapResponse:
+    meta = _load_stock_meta(market)
+
+    stock_nodes: list[HeatmapNode] = []
+    for code, item in snapshot.items.items():
+        stock_meta = meta.get(code) or {
+            "name": item.name or code,
+            "market": market,
+            "sector": None,
+            "industry": None,
+        }
+        fallback_size = item.current_price * max(item.volume, 1)
+        size = float(item.market_cap or fallback_size)
+        group_label = stock_meta.get(group_by) or "Unknown"
+        stock_nodes.append(
+            HeatmapNode(
+                id=f"stock:{code}",
+                parent_id=f"group:{group_label}",
+                label=f"{code} {stock_meta['name']}",
+                level="stock",
+                size=size,
+                color_value=float(item.change_pct),
+                meta={
+                    "code": code,
+                    "name": stock_meta["name"],
+                    "market": stock_meta["market"],
+                    "sector": stock_meta.get("sector"),
+                    "industry": stock_meta.get("industry"),
+                    "market_cap": item.market_cap,
+                    "close": item.current_price,
+                    "current_price": item.current_price,
+                    "previous_close": item.previous_close,
+                    "change_amount": item.change_amount,
+                    "change_pct": item.change_pct,
+                    "volume": item.volume,
+                    "source": snapshot.source,
+                    "updated_at": (
+                        snapshot.updated_at.isoformat()
+                        if snapshot.updated_at is not None
+                        else None
+                    ),
+                },
+            )
+        )
+
+    group_nodes = _group_nodes(stock_nodes)
+    root_size = sum(node.size for node in stock_nodes)
+    root_color = _weighted_color(stock_nodes)
+    root = HeatmapNode(
+        id="root",
+        parent_id=None,
+        label=market,
+        level="root",
+        size=root_size,
+        color_value=root_color,
+        meta={
+            "market": market,
+            "source": snapshot.source,
+            "errors": len(snapshot.errors),
+        },
+    )
+    return HeatmapResponse(
+        market=market,
+        group_by=group_by,
+        as_of=snapshot.updated_at.date() if snapshot.updated_at is not None else None,
+        updated_at=snapshot.updated_at,
+        market_session=snapshot.market_session.value,
+        source=snapshot.source,
         nodes=[root, *group_nodes, *stock_nodes],
     )
 
@@ -246,3 +361,8 @@ def _weighted_color(nodes: list[HeatmapNode]) -> float:
     if total_size <= 0:
         return 0.0
     return sum(node.color_value * node.size for node in nodes) / total_size
+
+
+def _historical_updated_at(selected_date: Date) -> datetime:
+    timezone = ZoneInfo(settings.APSCHEDULER_TIMEZONE)
+    return datetime.combine(selected_date, time(15, 30), tzinfo=timezone)

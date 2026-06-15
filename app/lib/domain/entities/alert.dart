@@ -12,8 +12,13 @@ enum AlertCondition {
   const AlertCondition(this.wire);
   final String wire;
 
+  /// Unknown wire values fall back to `priceAbove` (safest non-action default).
+  /// Backend additions surface as graceful fallback instead of a crash.
   static AlertCondition fromWire(String s) =>
-      AlertCondition.values.firstWhere((e) => e.wire == s.toUpperCase());
+      AlertCondition.values.firstWhere(
+        (e) => e.wire == s.toUpperCase(),
+        orElse: () => AlertCondition.priceAbove,
+      );
 
   String get label => switch (this) {
         AlertCondition.priceAbove => '가격 ≥',

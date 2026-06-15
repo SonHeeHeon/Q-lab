@@ -12,8 +12,14 @@ enum KisAccount {
   const KisAccount(this.wire);
   final String wire;
 
+  /// Unknown wire values fall back to PAPER (safest default — never operates
+  /// on a real-money account by accident). Backend additions surface as
+  /// graceful fallback instead of a crash.
   static KisAccount fromWire(String s) =>
-      KisAccount.values.firstWhere((e) => e.wire == s.toUpperCase());
+      KisAccount.values.firstWhere(
+        (e) => e.wire == s.toUpperCase(),
+        orElse: () => KisAccount.paper,
+      );
 
   String get label => switch (this) {
         KisAccount.paper => '모의',

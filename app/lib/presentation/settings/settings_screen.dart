@@ -12,6 +12,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/config.dart';
+import '../../core/preferences.dart';
 import '../../data/api/portfolio_api.dart';
 import '../../data/api/settings_api.dart';
 import '../../domain/entities/account.dart';
@@ -859,7 +860,11 @@ class _ThemeBlock extends ConsumerWidget {
             RadioListTile<ThemeMode>(
               value: m,
               groupValue: mode,
-              onChanged: (v) => ref.read(themeModeProvider.notifier).state = v!,
+              onChanged: (v) {
+                if (v != null) {
+                  ref.read(persistedThemeModeProvider.notifier).set(v);
+                }
+              },
               title: Text(switch (m) {
                 ThemeMode.system => '시스템 설정 따름',
                 ThemeMode.light => '라이트 모드',
@@ -889,8 +894,9 @@ class _ActiveAccountBlock extends ConsumerWidget {
                 ButtonSegment(value: KisAccountType.isa, label: Text('ISA')),
               ],
               selected: {account},
-              onSelectionChanged: (s) =>
-                  ref.read(activeAccountProvider.notifier).state = s.first,
+              onSelectionChanged: (s) => ref
+                  .read(persistedActiveAccountProvider.notifier)
+                  .set(s.first),
             ),
             const SizedBox(height: 8),
             const Text(

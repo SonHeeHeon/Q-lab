@@ -89,9 +89,14 @@ class OrderSheetArgs {
 
 Future<void> showOrderSheet(BuildContext context, WidgetRef ref, OrderSheetArgs args) {
   // Make sure WS is subscribed so the live price ticks while the sheet
-  // is open. We unsubscribe on close only if no other screen needs it
-  // (Portfolio screen already subscribes to its codes).
-  ref.read(quotesProvider.notifier).subscribe([args.stockCode]);
+  // is open. Track whether this code was already subscribed by the
+  // owning screen (Portfolio holdings auto-subscribe) — if so, we
+  // leave it; otherwise we own the subscription and must release it.
+  final quotes = ref.read(quotesProvider.notifier);
+  final alreadySubscribed = quotes.isSubscribed(args.stockCode);
+  if (!alreadySubscribed) {
+    quotes.subscribe([args.stockCode]);
+  }
 
   return showModalBottomSheet(
     context: context,
@@ -103,7 +108,11 @@ Future<void> showOrderSheet(BuildContext context, WidgetRef ref, OrderSheetArgs 
       ),
       child: _OrderSheet(args: args),
     ),
-  );
+  ).whenComplete(() {
+    if (!alreadySubscribed) {
+      quotes.unsubscribe([args.stockCode]);
+    }
+  });
 }
 
 class _OrderSheet extends ConsumerStatefulWidget {

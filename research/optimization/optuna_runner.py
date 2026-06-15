@@ -40,6 +40,7 @@ def optimize_strategy(
     storage_path: Path = STUDY_DB_PATH,
     weight_low: float = -2.0,
     weight_high: float = 2.0,
+    seed: int | None = 42,
 ) -> OptimizationResult:
     """Optimize factor weights for one strategy without any LLM dependencies."""
 
@@ -78,10 +79,21 @@ def optimize_strategy(
         storage=f"sqlite:///{storage_path}",
         direction="maximize",
         load_if_exists=True,
+        sampler=optuna.samplers.TPESampler(seed=seed),
     )
     study.optimize(objective_fn, n_trials=trials, gc_after_trial=True)
 
-    _write_outputs(output_dir, strategy, study, trial_rows, selected_objective)
+    _write_outputs(
+        output_dir,
+        strategy,
+        study,
+        trial_rows,
+        selected_objective,
+        seed=seed,
+        storage_path=storage_path,
+        weight_low=weight_low,
+        weight_high=weight_high,
+    )
     return OptimizationResult(
         study_name=study.study_name,
         objective=selected_objective,
@@ -153,6 +165,11 @@ def _write_outputs(
     study: optuna.Study,
     trial_rows: list[dict[str, object]],
     objective: str,
+    *,
+    seed: int | None,
+    storage_path: Path,
+    weight_low: float,
+    weight_high: float,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=False)
     best_strategy = _strategy_with_params(strategy, study.best_params)
@@ -171,6 +188,16 @@ def _write_outputs(
         "best_params": study.best_params,
         "n_trials_total": len(study.trials),
         "n_trials_this_run": len(trial_rows),
+        "seed": seed,
+        "storage_path": str(storage_path),
+        "strategy_name": strategy.name,
+        "universe": strategy.universe,
+        "start_date": strategy.start_date.isoformat(),
+        "end_date": strategy.end_date.isoformat(),
+        "rebalance_freq": strategy.rebalance_freq,
+        "top_n": strategy.top_n,
+        "weight_low": weight_low,
+        "weight_high": weight_high,
     }
     with (output_dir / "summary.json").open("w", encoding="utf-8") as file:
         json.dump(summary, file, ensure_ascii=False, indent=2)
@@ -217,6 +244,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--study-name", default=None)
     parser.add_argument("--weight-low", type=float, default=-2.0)
     parser.add_argument("--weight-high", type=float, default=2.0)
+    parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
 
 
@@ -230,6 +258,7 @@ def main() -> None:
         study_name=args.study_name,
         weight_low=args.weight_low,
         weight_high=args.weight_high,
+        seed=args.seed,
     )
     print(f"[optuna] study={result.study_name}")
     print(f"[optuna] objective={result.objective} best={result.best_value:.6f}")

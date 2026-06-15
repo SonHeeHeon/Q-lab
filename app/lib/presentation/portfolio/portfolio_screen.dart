@@ -302,6 +302,9 @@ class _HoldingRowState extends ConsumerState<_HoldingRow>
   }
 
   void _maybeFlash(double? newPrice) {
+    // Skip if the widget (and its AnimationController) has been disposed
+    // — e.g. user just sold this holding while a tick was still in flight.
+    if (!mounted) return;
     if (newPrice == null) return;
     if (_prevPrice != null && newPrice != _prevPrice) {
       _flash.forward(from: 0);

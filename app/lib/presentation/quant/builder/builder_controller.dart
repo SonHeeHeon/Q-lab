@@ -92,12 +92,22 @@ class BuilderNotifier extends Notifier<BuilderState> {
       state = state.copyWith(draft: state.draft.copyWith(endDate: d));
 
   // ----- factors -----------------------------------------------------------
+
+  /// True when every entry in [kFactorCatalog] is already in the draft —
+  /// guards the [+ Add Factor] button so users can't insert duplicates.
+  bool get catalogExhausted {
+    final used = state.draft.factors.map((f) => f.factor).toSet();
+    return kFactorCatalog.every((f) => used.contains(f.code));
+  }
+
   void addFactor() {
     final used = state.draft.factors.map((f) => f.factor).toSet();
-    final next = kFactorCatalog.firstWhere(
-      (f) => !used.contains(f.code),
-      orElse: () => kFactorCatalog.first,
-    );
+    if (used.length >= kFactorCatalog.length) {
+      // All catalog entries already used; silently no-op. The button
+      // should be disabled via `catalogExhausted` so this path is rare.
+      return;
+    }
+    final next = kFactorCatalog.firstWhere((f) => !used.contains(f.code));
     state = state.copyWith(
       draft: state.draft.copyWith(factors: [
         ...state.draft.factors,

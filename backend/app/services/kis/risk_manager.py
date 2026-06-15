@@ -10,6 +10,7 @@ from decimal import Decimal
 
 from backend.app.core.config import settings
 from backend.app.schemas.portfolio import OrderRequest, OrderResponse, OrderType
+from backend.app.services.automation.safety import assert_order_allowed
 from backend.app.services.kis.rest_client import KISRestClient, KISRestError
 from backend.app.services.kis.ws_client import QuoteTick
 from backend.app.services.notify.telegram import TelegramSendError, send_markdown
@@ -145,6 +146,10 @@ class PortfolioRiskManager:
             )
         else:
             try:
+                assert_order_allowed(
+                    estimated_notional=tick_price * Decimal(position.quantity),
+                    live_mode=True,
+                )
                 order_response = await self._kis_client.place_order(request)
             except KISRestError:
                 logger.exception(

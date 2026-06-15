@@ -10,6 +10,7 @@ library;
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../parse_utils.dart';
 import 'api_client.dart';
 
 class BacktestRunSummary {
@@ -439,17 +440,5 @@ class BacktestApi {
 
 final backtestApiProvider = Provider<BacktestApi>((ref) => BacktestApi(ref));
 
-double _d(Object? v) {
-  if (v == null) return 0;
-  if (v is num) return v.toDouble();
-  if (v is String) return double.tryParse(v) ?? 0;
-  return 0;
-}
-
-int _i(Object? v) {
-  if (v == null) return 0;
-  if (v is int) return v;
-  if (v is num) return v.toInt();
-  if (v is String) return int.tryParse(v) ?? (double.tryParse(v)?.toInt() ?? 0);
-  return 0;
-}
+double _d(Object? v) => safeDouble(v, hint: 'backtest');
+int _i(Object? v) => safeInt(v, hint: 'backtest');

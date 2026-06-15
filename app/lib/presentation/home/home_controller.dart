@@ -5,9 +5,11 @@
 /// `/api/alerts` endpoint ships).
 library;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/api/alerts_api.dart';
+import '../../data/api/api_client.dart';
 import '../../data/api/portfolio_api.dart';
 import '../../domain/entities/alert.dart';
 import '../../domain/entities/position.dart';
@@ -19,13 +21,19 @@ class HomeSnapshot {
     required this.triggeredToday,
     required this.topMovers,
     this.alertsAvailable = true,
+    this.alertsError,
   });
 
   final UnifiedBalance balance;
   final List<Alert> pendingAlerts;
   final List<Alert> triggeredToday;
   final List<Position> topMovers;
+
+  /// `false` only when the alerts endpoint is genuinely missing (404).
+  /// Other failures (5xx, timeout) surface via [alertsError] and the
+  /// card shows the actual error instead of pretending it doesn't exist.
   final bool alertsAvailable;
+  final String? alertsError;
 }
 
 final homeSnapshotProvider = FutureProvider<HomeSnapshot>((ref) async {
@@ -36,11 +44,23 @@ final homeSnapshotProvider = FutureProvider<HomeSnapshot>((ref) async {
 
   List<Alert> alerts = const [];
   bool alertsAvailable = true;
+  String? alertsError;
   try {
     alerts = await alertsApi.list();
-  } catch (_) {
-    // Backend `/api/alerts` not yet implemented (Codex TODO).
-    alertsAvailable = false;
+  } on ApiError catch (e) {
+    if (e.statusCode == 404) {
+      // Backend `/api/alerts` not yet implemented — treat as gracefully
+      // absent and show the "coming soon" card.
+      alertsAvailable = false;
+    } else {
+      // Real failure: surface the message so the user knows what's wrong
+      // instead of pretending the feature doesn't exist.
+      alertsError = e.message;
+      debugPrint('[home] alerts api error: $e');
+    }
+  } catch (e) {
+    alertsError = '$e';
+    debugPrint('[home] alerts fetch failed: $e');
   }
 
   final pending = alerts.where((a) => a.status == AlertStatus.pending).toList();
@@ -62,5 +82,6 @@ final homeSnapshotProvider = FutureProvider<HomeSnapshot>((ref) async {
     triggeredToday: triggeredToday,
     topMovers: topMovers,
     alertsAvailable: alertsAvailable,
+    alertsError: alertsError,
   );
 });

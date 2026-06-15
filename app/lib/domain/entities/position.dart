@@ -5,6 +5,7 @@
 /// uses `Decimal`. We coerce here so callers always see `double`.
 library;
 
+import '../../data/parse_utils.dart';
 import 'account.dart';
 
 class Position {
@@ -56,21 +57,8 @@ class Position {
 }
 
 // Pydantic emits Decimal as JSON STRING (e.g. "10000000", "0E-8").
-// We accept num | string | null uniformly.
-double _toDouble(Object? v) => _toDoubleOrNull(v) ?? 0.0;
-double? _toDoubleOrNull(Object? v) {
-  if (v == null) return null;
-  if (v is num) return v.toDouble();
-  if (v is String) {
-    if (v.isEmpty) return null;
-    return double.tryParse(v);
-  }
-  return null;
-}
-
-int _toInt(Object? v) {
-  if (v is int) return v;
-  if (v is num) return v.toInt();
-  if (v is String) return int.tryParse(v) ?? 0;
-  return 0;
-}
+// Centralised in lib/data/parse_utils.dart so unexpected payloads
+// produce a debug log instead of silently coercing to 0.
+double _toDouble(Object? v) => safeDouble(v, hint: 'position');
+double? _toDoubleOrNull(Object? v) => safeDoubleOrNull(v, hint: 'position');
+int _toInt(Object? v) => safeInt(v, hint: 'position.qty');

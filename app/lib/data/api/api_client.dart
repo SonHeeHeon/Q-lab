@@ -20,9 +20,25 @@ import 'mock_interceptor.dart';
 /// Safely coerce a JSON value (possibly `Map<dynamic, dynamic>` after
 /// jsonDecode on Web) to the `Map<String, dynamic>` shape every
 /// `fromJson` factory expects.
+///
+/// If the backend accidentally sends numeric keys (`{123: "x"}`), they
+/// are coerced to strings — but a debug warning fires so developers
+/// notice the contract violation instead of chasing silent lookup
+/// failures downstream.
 Map<String, dynamic> asJsonMap(Object? v) {
   if (v is Map<String, dynamic>) return v;
-  if (v is Map) return v.map((k, val) => MapEntry(k.toString(), val));
+  if (v is Map) {
+    assert(() {
+      final nonString = v.keys.where((k) => k is! String).take(3).toList();
+      if (nonString.isNotEmpty) {
+        debugPrint(
+          '[parse] asJsonMap got non-String keys (silently coerced): $nonString',
+        );
+      }
+      return true;
+    }());
+    return v.map((k, val) => MapEntry(k.toString(), val));
+  }
   throw FormatException('Expected JSON object, got ${v.runtimeType}');
 }
 

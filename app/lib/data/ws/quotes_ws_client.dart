@@ -88,6 +88,11 @@ class QuotesNotifier extends Notifier<Map<String, Tick>> {
     }
   }
 
+  /// True if [code] is currently in the active subscription set.
+  /// Used by transient consumers (e.g. order sheet) to avoid stomping
+  /// on subscriptions owned by long-lived screens.
+  bool isSubscribed(String code) => _subscribed.contains(code);
+
   // -- internals --------------------------------------------------------------
 
   void _connect() {
@@ -118,6 +123,7 @@ class QuotesNotifier extends Notifier<Map<String, Tick>> {
   }
 
   void _onMessage(dynamic raw) {
+    if (_disposed) return;
     try {
       final text = raw is String ? raw : utf8.decode(raw as List<int>);
       final frame = jsonDecode(text);
@@ -130,7 +136,9 @@ class QuotesNotifier extends Notifier<Map<String, Tick>> {
           break;
         case 'alert_triggered':
           final id = (frame['alert_id'] as num?)?.toInt();
-          if (id != null) _alertController.add(id);
+          if (id != null && !_alertController.isClosed) {
+            _alertController.add(id);
+          }
           break;
         default:
           break;

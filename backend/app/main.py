@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from logging.handlers import TimedRotatingFileHandler
@@ -20,11 +21,18 @@ from backend.app.api.portfolio import router as portfolio_router
 from backend.app.api.principles import router as principles_router
 from backend.app.api.quant import router as quant_router
 from backend.app.api.settings import router as settings_router
+from backend.app.api.screener import router as screener_router
+from backend.app.api.stocks import router as stocks_router
+from backend.app.api.system import automation_router, router as system_router
 from backend.app.api.trade_journal import router as trade_journal_router
 from backend.app.api.watchlist import router as watchlist_router
 from backend.app.core.config import settings
 from backend.app.services.batch.scheduler import start_batch_scheduler, stop_batch_scheduler
 from backend.app.schemas.portfolio import ApiEnvelope, ApiError
+from backend.app.services.kis.market_snapshot import (
+    start_market_snapshot_scheduler,
+    stop_market_snapshot_scheduler,
+)
 from backend.app.services.kis.order_tracker import OrderTrackerService
 from backend.app.services.kis.risk_manager import PortfolioRiskManager
 from backend.app.services.kis.ws_client import QuoteTick
@@ -42,8 +50,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     kis_ws_client: KISWebSocketClient | None = None
     batch_scheduler = None
+    market_snapshot_scheduler = None
     order_tracker: OrderTrackerService | None = None
     risk_manager: PortfolioRiskManager | None = None
+    risk_subscription_task: asyncio.Task[None] | None = None
 
     if settings.RISK_MANAGER_AUTOSTART:
         risk_manager = PortfolioRiskManager()
@@ -78,6 +88,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         kis_ws_client.start()
         set_upstream_client(kis_ws_client)
         app.state.kis_ws_client = kis_ws_client
+        if risk_manager is not None:
+            risk_subscription_task = asyncio.create_task(
+                _reconcile_risk_subscriptions(kis_ws_client, risk_manager),
+                name="portfolio-guard-subscription-reconciler",
+            )
         logger.info(
             "started KIS websocket client for %s with codes=%s",
             settings.KIS_DEFAULT_ACCOUNT.value,
@@ -93,6 +108,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         batch_scheduler = start_batch_scheduler()
         app.state.batch_scheduler = batch_scheduler
 
+    if settings.MARKET_SNAPSHOT_AUTOSTART:
+        market_snapshot_scheduler = start_market_snapshot_scheduler()
+        app.state.market_snapshot_scheduler = market_snapshot_scheduler
+
     if settings.ORDER_TRACKER_AUTOSTART:
         order_tracker = OrderTrackerService()
         order_tracker.start()
@@ -104,9 +123,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         set_upstream_client(None)
         if order_tracker is not None:
             await order_tracker.stop()
+        stop_market_snapshot_scheduler(market_snapshot_scheduler)
         stop_batch_scheduler(batch_scheduler)
         if kis_ws_client is not None:
             await kis_ws_client.stop()
+        if risk_subscription_task is not None:
+            risk_subscription_task.cancel()
+            try:
+                await risk_subscription_task
+            except asyncio.CancelledError:
+                pass
         await service_engine.dispose()
         await research_engine.dispose()
 
@@ -179,9 +205,39 @@ app.include_router(portfolio_router)
 app.include_router(principles_router)
 app.include_router(quant_router)
 app.include_router(settings_router)
+app.include_router(stocks_router)
+app.include_router(screener_router)
+app.include_router(system_router)
+app.include_router(automation_router)
 app.include_router(trade_journal_router)
 app.include_router(watchlist_router)
 app.include_router(quotes_router)
+
+
+async def _reconcile_risk_subscriptions(
+    kis_ws_client: KISWebSocketClient,
+    risk_manager: PortfolioRiskManager,
+) -> None:
+    risk_subscribed_codes = set(risk_manager.tracked_codes)
+    while True:
+        await asyncio.sleep(settings.RISK_MANAGER_POSITION_REFRESH_SECONDS)
+        try:
+            latest_codes = await risk_manager.refresh_positions()
+            to_subscribe = latest_codes - risk_subscribed_codes
+            to_unsubscribe = (
+                risk_subscribed_codes
+                - latest_codes
+                - set(settings.kis_ws_default_codes)
+            )
+            if to_subscribe:
+                await kis_ws_client.subscribe(to_subscribe)
+            if to_unsubscribe:
+                await kis_ws_client.unsubscribe(to_unsubscribe)
+            risk_subscribed_codes = set(latest_codes)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("risk manager subscription reconciliation failed")
 
 
 def _configure_logging() -> None:

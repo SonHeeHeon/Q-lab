@@ -20,6 +20,7 @@ import '../../../data/api/quant_api.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/treemap.dart';
 import '../../heatmap/heatmap_controller.dart';
+import '../../heatmap/session_badge.dart';
 import 'insights_controller.dart';
 
 final _date = DateFormat('yyyy-MM-dd');
@@ -179,6 +180,11 @@ class _MiniHeatmap extends ConsumerWidget {
           children: [
             Text('🗺️ 시장 히트맵',
                 style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
+            const SizedBox(width: 8),
+            async.maybeWhen(
+              data: (data) => SessionBadge(response: data, compact: true),
+              orElse: () => const SizedBox.shrink(),
+            ),
             const Spacer(),
             TextButton.icon(
               icon: const Icon(Icons.open_in_full, size: 16),
@@ -204,6 +210,8 @@ class _MiniHeatmap extends ConsumerWidget {
                     );
                   }
                   return Treemap<HeatmapNode>(
+                    animate: true,
+                    keyOf: (n) => n.id,
                     items: [
                       for (final n in stocks)
                         TreemapItem<HeatmapNode>(

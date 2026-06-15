@@ -12,6 +12,7 @@ from backend.app.schemas.portfolio import (
     PortfolioSummary,
     PositionResponse,
 )
+from backend.app.services.kis.rest_client import KISCurrentPrice
 from backend.app.services.kis.rebalancer import (
     build_rebalance_plan,
     execute_rebalance_plan,
@@ -64,6 +65,19 @@ class FakeKISClient:
             raw={},
         )
 
+    async def get_current_price(self, account_type: AccountType, stock_code: str):
+        return KISCurrentPrice(
+            stock_code=stock_code,
+            name=stock_code,
+            current_price=Decimal("5000"),
+            previous_close=Decimal("4900"),
+            change_amount=Decimal("100"),
+            change_pct=Decimal("2.0"),
+            volume=1000,
+            market_cap=None,
+            raw={},
+        )
+
 
 @pytest.mark.asyncio
 async def test_rebalance_plan_sells_before_buys_and_mock_does_not_submit() -> None:
@@ -107,3 +121,20 @@ async def test_rebalance_live_mode_submits_market_orders() -> None:
         "ORDER-1",
         "ORDER-2",
     ]
+
+
+@pytest.mark.asyncio
+async def test_rebalance_plan_fetches_price_for_new_target_buy() -> None:
+    client = FakeKISClient()
+    plan = await build_rebalance_plan(
+        account_type=AccountType.PAPER,
+        target_weights={"005930": Decimal("0"), "123456": Decimal("1")},
+        kis_client=client,
+        min_trade_value=Decimal("1"),
+        cash_buffer_pct=Decimal("0"),
+    )
+
+    orders = [(order.direction, order.stock_code, order.quantity) for order in plan.orders]
+    assert (TradeDirection.SELL, "005930", 10) in orders
+    assert (TradeDirection.BUY, "123456", 80) in orders
+    assert not any("no current KIS price" in warning for warning in plan.warnings)

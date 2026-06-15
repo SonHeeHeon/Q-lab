@@ -31,6 +31,7 @@ from shared.domain.trade import TradeDirection
 BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
 ORDER_CASH_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
 ORDER_EXECUTION_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+QUOTE_PRICE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-price"
 
 ORDER_STATUS_PENDING = "PENDING"
 ORDER_STATUS_PARTIALLY_FILLED = "PARTIALLY_FILLED"
@@ -81,6 +82,21 @@ class KISOrderExecution:
     @property
     def is_terminal(self) -> bool:
         return self.status in {ORDER_STATUS_FILLED, ORDER_STATUS_CANCELED}
+
+
+@dataclass(frozen=True, slots=True)
+class KISCurrentPrice:
+    """Normalized KIS domestic stock current-price row."""
+
+    stock_code: str
+    name: str | None
+    current_price: Decimal
+    previous_close: Decimal | None
+    change_amount: Decimal | None
+    change_pct: Decimal
+    volume: int
+    market_cap: Decimal | None
+    raw: dict[str, Any]
 
 
 class KISRestClient:
@@ -193,6 +209,27 @@ class KISRestClient:
             accepted_at=datetime.now().astimezone(),
             raw=output or payload,
         )
+
+    async def get_current_price(
+        self,
+        account_type: AccountType,
+        stock_code: str,
+    ) -> KISCurrentPrice:
+        """Fetch one domestic stock's current price snapshot from KIS."""
+
+        normalized_code = str(stock_code).zfill(6)
+        payload, _headers = await self._request(
+            "GET",
+            account_type,
+            QUOTE_PRICE_PATH,
+            tr_id="FHKST01010100",
+            params={
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_INPUT_ISCD": normalized_code,
+            },
+        )
+        output = self._as_dict(payload.get("output"))
+        return self._parse_current_price(normalized_code, output or payload)
 
     async def get_order_execution(
         self,
@@ -618,6 +655,68 @@ class KISRestClient:
                 row.get("asst_icdc_erng_rt") or row.get("evlu_pfls_rt")
             ),
         )
+
+    def _parse_current_price(
+        self,
+        stock_code: str,
+        row: dict[str, Any],
+    ) -> KISCurrentPrice:
+        current_price = self._to_decimal(
+            row.get("stck_prpr")
+            or row.get("STCK_PRPR")
+            or row.get("current_price")
+        )
+        previous_close = self._to_optional_decimal(
+            row.get("stck_sdpr")
+            or row.get("STCK_SDPR")
+            or row.get("prdy_clpr")
+            or row.get("PRDY_CLPR")
+        )
+        change_amount = self._to_optional_decimal(
+            row.get("prdy_vrss")
+            or row.get("PRDY_VRSS")
+            or row.get("change_amount")
+        )
+        change_pct = self._to_decimal(
+            row.get("prdy_ctrt")
+            or row.get("PRDY_CTRT")
+            or row.get("change_pct")
+        )
+        market_cap = self._market_cap_to_krw(
+            self._to_optional_decimal(
+                row.get("hts_avls")
+                or row.get("HTS_AVLS")
+                or row.get("market_cap")
+            )
+        )
+        return KISCurrentPrice(
+            stock_code=stock_code,
+            name=self._optional_str(
+                row.get("hts_kor_isnm")
+                or row.get("HTS_KOR_ISNM")
+                or row.get("prdt_name")
+            ),
+            current_price=current_price,
+            previous_close=previous_close,
+            change_amount=change_amount,
+            change_pct=change_pct,
+            volume=self._to_int(
+                row.get("acml_vol")
+                or row.get("ACML_VOL")
+                or row.get("volume")
+            ),
+            market_cap=market_cap,
+            raw=row,
+        )
+
+    def _market_cap_to_krw(self, value: Decimal | None) -> Decimal | None:
+        if value is None:
+            return None
+        if value <= 0:
+            return None
+        if value < Decimal("1000000000"):
+            return value * Decimal("100000000")
+        return value
 
     def _ssl_context(self) -> ssl.SSLContext | bool:
         if not self._settings.KIS_SSL_VERIFY:

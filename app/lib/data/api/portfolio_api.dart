@@ -12,6 +12,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/entities/account.dart';
 import '../../domain/entities/position.dart';
+import '../parse_utils.dart';
 import 'api_client.dart';
 
 class AccountDetail {
@@ -274,9 +275,4 @@ class PortfolioApi {
 
 final portfolioApiProvider = Provider<PortfolioApi>((ref) => PortfolioApi(ref));
 
-double _d(Object? v) {
-  if (v == null) return 0.0;
-  if (v is num) return v.toDouble();
-  if (v is String) return double.tryParse(v) ?? 0.0;
-  return 0.0;
-}
+double _d(Object? v) => safeDouble(v, hint: 'portfolio');

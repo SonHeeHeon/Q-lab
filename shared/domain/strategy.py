@@ -25,7 +25,14 @@ class StrategyDefinition(BaseModel):
 
     name: str
     description: str
-    universe: Literal["KOSPI200", "KOSPI_ALL", "KOSDAQ_ALL", "CUSTOM"]
+    universe: Literal[
+        "KOSPI200",
+        "KOSDAQ150",
+        "KOSPI_ALL",
+        "KOSDAQ_ALL",
+        "NASDAQ100",
+        "CUSTOM",
+    ]
     rebalance_freq: Literal["MONTHLY", "QUARTERLY", "YEARLY"]
     factors: list[FactorWeight]
     filters: list[FilterRule]

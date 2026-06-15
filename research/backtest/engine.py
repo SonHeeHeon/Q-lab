@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import re
 from datetime import date as Date
 from pathlib import Path
 from typing import Literal
@@ -13,9 +14,17 @@ from pydantic import BaseModel
 from research.backtest.metrics import Metrics, compute_metrics
 from research.backtest.simulator import CostModel, SimulatedTrade, rebalance
 from research.factors.momentum import calculate_named_momentum
+from research.factors.common import (
+    normalize_code,
+    normalize_codes,
+    split_korean_and_global,
+    table_exists,
+)
 from research.factors.quality import calculate_roa, calculate_roe
 from research.factors.value import calculate_pbr, calculate_per
 from research.factors.volume import calculate_trading_days_30d, calculate_volume_spike
+from research.universe.kosdaq150 import KOSDAQ150_CODES_FILE
+from research.universe.kospi200 import DEFAULT_CODES_FILE
 from shared.db.session import research_db_path
 from shared.domain.strategy import FactorWeight, FilterRule, StrategyDefinition
 
@@ -51,7 +60,7 @@ def run_backtest(
 
     path = db_path or research_db_path
     warnings: list[str] = []
-    price_rows = _load_price_rows(strategy.start_date, strategy.end_date, path)
+    price_rows = _load_price_rows(strategy.start_date, strategy.end_date, path, strategy.universe)
 
     if price_rows.empty:
         warnings.append("No price rows found for requested backtest window.")
@@ -155,7 +164,31 @@ def get_universe(
     params: list[str] = [as_of.isoformat(), as_of.isoformat()]
 
     normalized = universe.upper()
-    if normalized in {"KOSPI200", "KOSPI_ALL"}:
+    if normalized == "KOSPI200":
+        codes = _index_membership_universe(
+            "KOSPI200",
+            as_of=as_of,
+            db_path=path,
+            fallback_file=DEFAULT_CODES_FILE,
+        )
+        if codes:
+            return codes
+        market_clause = "AND market = ?"
+        params.append("KOSPI")
+    elif normalized == "KOSDAQ150":
+        codes = _index_membership_universe(
+            "KOSDAQ150",
+            as_of=as_of,
+            db_path=path,
+            fallback_file=KOSDAQ150_CODES_FILE,
+        )
+        if codes:
+            return codes
+        market_clause = "AND market = ?"
+        params.append("KOSDAQ")
+    elif normalized == "NASDAQ100":
+        return _us_universe(as_of=as_of, db_path=path, exchange="NASDAQ")
+    elif normalized == "KOSPI_ALL":
         market_clause = "AND market = ?"
         params.append("KOSPI")
     elif normalized == "KOSDAQ_ALL":
@@ -174,7 +207,7 @@ def get_universe(
     """
     with sqlite3.connect(path) as conn:
         rows = conn.execute(sql, params).fetchall()
-    return [str(row[0]).zfill(6) for row in rows]
+    return normalize_codes(row[0] for row in rows)
 
 
 def score_stocks(
@@ -187,7 +220,7 @@ def score_stocks(
 ) -> pd.DataFrame:
     """Score stocks with point-in-time factor values."""
 
-    normalized_codes = sorted({str(code).zfill(6) for code in codes})
+    normalized_codes = normalize_codes(codes)
     frame = pd.DataFrame(index=pd.Index(normalized_codes, name="code"))
     score_columns: list[str] = []
 
@@ -282,6 +315,13 @@ def _factor_series(
         if factor_name == "VOLUME_SPIKE":
             return calculate_volume_spike(codes, as_of=as_of, db_path=db_path)
         if factor_name == "MARKET_CAP":
+            _warn(
+                warnings,
+                "MARKET_CAP currently uses a liquidity proxy unless true "
+                "historical market-cap data is present; prefer TURNOVER_PROXY.",
+            )
+            return _market_cap_proxy(codes, as_of=as_of, db_path=db_path)
+        if factor_name in {"TURNOVER", "TURNOVER_PROXY", "LIQUIDITY"}:
             return _market_cap_proxy(codes, as_of=as_of, db_path=db_path)
     except Exception as exc:
         _warn(warnings, f"Failed to compute {factor_name} on {as_of}: {exc}")
@@ -299,33 +339,131 @@ def _market_cap_proxy(
 ) -> pd.Series:
     """Local size proxy used when true historical market cap is unavailable."""
 
-    if not codes:
+    normalized_codes = normalize_codes(codes)
+    if not normalized_codes:
         return pd.Series(dtype="float64")
     path = db_path or research_db_path
+    with sqlite3.connect(path) as conn:
+        frames = []
+        korean_codes, global_codes = split_korean_and_global(normalized_codes)
+        if korean_codes and table_exists(conn, "prices_daily"):
+            frames.append(
+                _turnover_proxy_from_table(
+                    conn,
+                    table_name="prices_daily",
+                    code_column="stock_code",
+                    codes=korean_codes,
+                    as_of=as_of,
+                )
+            )
+        if global_codes and table_exists(conn, "prices_daily_us"):
+            frames.append(
+                _turnover_proxy_from_table(
+                    conn,
+                    table_name="prices_daily_us",
+                    code_column="ticker",
+                    codes=global_codes,
+                    as_of=as_of,
+                )
+            )
+    frames = [frame for frame in frames if not frame.empty]
+    if not frames:
+        return pd.Series(dtype="float64")
+    rows = pd.concat(frames, ignore_index=True)
+    rows["market_cap_proxy"] = rows["close"].astype(float) * rows["volume"].astype(float)
+    return rows.set_index("stock_code")["market_cap_proxy"]
+
+
+def _index_membership_universe(
+    index_code: str,
+    *,
+    as_of: Date,
+    db_path: Path,
+    fallback_file: Path,
+) -> list[str]:
+    with sqlite3.connect(db_path) as conn:
+        if table_exists(conn, "index_memberships"):
+            rows = conn.execute(
+                """
+                SELECT stock_code
+                FROM index_memberships
+                WHERE index_code = ?
+                  AND valid_from <= ?
+                  AND (valid_to IS NULL OR valid_to > ?)
+                ORDER BY stock_code
+                """,
+                [index_code, as_of.isoformat(), as_of.isoformat()],
+            ).fetchall()
+            if rows:
+                return normalize_codes(row[0] for row in rows)
+
+    file_codes = _read_codes_file(fallback_file)
+    if file_codes:
+        return file_codes
+    return []
+
+
+def _us_universe(
+    *,
+    as_of: Date,
+    db_path: Path,
+    exchange: str,
+) -> list[str]:
+    with sqlite3.connect(db_path) as conn:
+        if not table_exists(conn, "stocks_us"):
+            return []
+        rows = conn.execute(
+            """
+            SELECT ticker
+            FROM stocks_us
+            WHERE exchange = ?
+              AND (listed_at IS NULL OR listed_at <= ?)
+              AND (delisted_at IS NULL OR delisted_at > ?)
+              AND is_delisted = 0
+            ORDER BY ticker
+            """,
+            [exchange, as_of.isoformat(), as_of.isoformat()],
+        ).fetchall()
+    return normalize_codes(row[0] for row in rows)
+
+
+def _read_codes_file(path: Path) -> list[str]:
+    if not path.exists():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except OSError:
+        return []
+    return normalize_codes(re.findall(r"(?<!\d)\d{6}(?!\d)", text))
+
+
+def _turnover_proxy_from_table(
+    conn: sqlite3.Connection,
+    *,
+    table_name: str,
+    code_column: str,
+    codes: list[str],
+    as_of: Date,
+) -> pd.DataFrame:
     placeholders = ",".join("?" for _ in codes)
     sql = f"""
         SELECT stock_code, close, volume
         FROM (
             SELECT
-                stock_code,
+                {code_column} AS stock_code,
                 COALESCE(adj_close, close) AS close,
                 volume,
                 ROW_NUMBER() OVER (
-                    PARTITION BY stock_code
+                    PARTITION BY {code_column}
                     ORDER BY date DESC
                 ) AS rn
-            FROM prices_daily
-            WHERE stock_code IN ({placeholders})
+            FROM {table_name}
+            WHERE {code_column} IN ({placeholders})
               AND date <= ?
         )
         WHERE rn = 1
     """
-    with sqlite3.connect(path) as conn:
-        rows = pd.read_sql_query(sql, conn, params=[*codes, as_of.isoformat()])
-    if rows.empty:
-        return pd.Series(dtype="float64")
-    rows["market_cap_proxy"] = rows["close"].astype(float) * rows["volume"].astype(float)
-    return rows.set_index("stock_code")["market_cap_proxy"]
+    return pd.read_sql_query(sql, conn, params=[*codes, as_of.isoformat()])
 
 
 def _transform(
@@ -365,20 +503,43 @@ def _filter_mask(series: pd.Series, rule: FilterRule) -> pd.Series:
     raise ValueError(f"Unsupported filter op: {op}")
 
 
-def _load_price_rows(start: Date, end: Date, db_path: Path) -> pd.DataFrame:
-    sql = """
-        SELECT stock_code, date, COALESCE(adj_close, close) AS close
-        FROM prices_daily
-        WHERE date BETWEEN ? AND ?
-        ORDER BY date, stock_code
-    """
+def _load_price_rows(start: Date, end: Date, db_path: Path, universe: str) -> pd.DataFrame:
+    normalized_universe = universe.upper()
     with sqlite3.connect(db_path) as conn:
-        rows = pd.read_sql_query(sql, conn, params=[start.isoformat(), end.isoformat()])
-    if rows.empty:
-        return rows
+        frames: list[pd.DataFrame] = []
+        if normalized_universe != "NASDAQ100" and table_exists(conn, "prices_daily"):
+            frames.append(
+                pd.read_sql_query(
+                    """
+                    SELECT stock_code, date, COALESCE(adj_close, close) AS close
+                    FROM prices_daily
+                    WHERE date BETWEEN ? AND ?
+                    ORDER BY date, stock_code
+                    """,
+                    conn,
+                    params=[start.isoformat(), end.isoformat()],
+                )
+            )
+        if normalized_universe in {"NASDAQ100", "CUSTOM"} and table_exists(conn, "prices_daily_us"):
+            frames.append(
+                pd.read_sql_query(
+                    """
+                    SELECT ticker AS stock_code, date, COALESCE(adj_close, close) AS close
+                    FROM prices_daily_us
+                    WHERE date BETWEEN ? AND ?
+                    ORDER BY date, ticker
+                    """,
+                    conn,
+                    params=[start.isoformat(), end.isoformat()],
+                )
+            )
+    frames = [frame for frame in frames if not frame.empty]
+    if not frames:
+        return pd.DataFrame(columns=["stock_code", "date", "close"])
+    rows = pd.concat(frames, ignore_index=True)
     rows["date"] = pd.to_datetime(rows["date"]).dt.date
     rows["close"] = rows["close"].astype(float)
-    rows["stock_code"] = rows["stock_code"].astype(str).str.zfill(6)
+    rows["stock_code"] = rows["stock_code"].map(normalize_code)
     return rows
 
 

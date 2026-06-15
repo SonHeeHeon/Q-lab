@@ -6,6 +6,7 @@ library;
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../parse_utils.dart';
 import 'api_client.dart';
 
 class TradeLite {
@@ -182,9 +183,4 @@ class TradeJournalApi {
 final tradeJournalApiProvider =
     Provider<TradeJournalApi>((ref) => TradeJournalApi(ref));
 
-double _d(Object? v) {
-  if (v == null) return 0.0;
-  if (v is num) return v.toDouble();
-  if (v is String) return double.tryParse(v) ?? 0.0;
-  return 0.0;
-}
+double _d(Object? v) => safeDouble(v, hint: 'trade_journal');

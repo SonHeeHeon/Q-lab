@@ -173,6 +173,7 @@ Color colorForChangePct(double pct, {double saturation = 4.0}) {
 // ---------------------------------------------------------------------------
 
 typedef TreemapCellTap<T> = void Function(T item);
+typedef TreemapKeyOf<T> = Object Function(T item);
 
 class Treemap<T> extends StatelessWidget {
   const Treemap({
@@ -182,6 +183,9 @@ class Treemap<T> extends StatelessWidget {
     this.onCellTap,
     this.minLabelArea = 60 * 30.0,
     this.padding = 1.0,
+    this.animate = false,
+    this.animationDuration = const Duration(milliseconds: 600),
+    this.keyOf,
   });
 
   final List<TreemapItem<T>> items;
@@ -194,6 +198,17 @@ class Treemap<T> extends StatelessWidget {
   /// Gap between cells (px).
   final double padding;
 
+  /// When true, cells animate to their new position/size and color
+  /// instead of being rebuilt instantly. Useful for periodic polling.
+  ///
+  /// Requires `keyOf` so Flutter can match old cells to new ones.
+  final bool animate;
+  final Duration animationDuration;
+
+  /// Stable identity for each item across re-layouts. Required when
+  /// `animate=true`. If null, defaults to the item's `Object.hashCode`.
+  final TreemapKeyOf<T>? keyOf;
+
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
@@ -202,13 +217,17 @@ class Treemap<T> extends StatelessWidget {
         final cells = Squarify.layout<T>(rect, items);
         return Stack(
           children: [
-            for (final c in cells) _CellBox<T>(
-              cell: c,
-              label: labelBuilder(c.item.value),
-              onTap: onCellTap,
-              padding: padding,
-              minLabelArea: minLabelArea,
-            ),
+            for (final c in cells)
+              _CellBox<T>(
+                key: ValueKey(keyOf?.call(c.item.value) ?? c.item.value),
+                cell: c,
+                label: labelBuilder(c.item.value),
+                onTap: onCellTap,
+                padding: padding,
+                minLabelArea: minLabelArea,
+                animate: animate,
+                animationDuration: animationDuration,
+              ),
           ],
         );
       },
@@ -218,11 +237,14 @@ class Treemap<T> extends StatelessWidget {
 
 class _CellBox<T> extends StatelessWidget {
   const _CellBox({
+    super.key,
     required this.cell,
     required this.label,
     required this.onTap,
     required this.padding,
     required this.minLabelArea,
+    required this.animate,
+    required this.animationDuration,
   });
 
   final TreemapCell<T> cell;
@@ -230,6 +252,8 @@ class _CellBox<T> extends StatelessWidget {
   final TreemapCellTap<T>? onTap;
   final double padding;
   final double minLabelArea;
+  final bool animate;
+  final Duration animationDuration;
 
   @override
   Widget build(BuildContext context) {
@@ -241,50 +265,106 @@ class _CellBox<T> extends StatelessWidget {
     final fontSize = math.max(9.0, math.min(13.0, math.sqrt(area) / 7));
     final pctText = '${cell.item.colorValue >= 0 ? '+' : ''}${cell.item.colorValue.toStringAsFixed(2)}%';
 
-    final cell0 = GestureDetector(
+    final inner = GestureDetector(
       onTap: onTap == null ? null : () => onTap!(cell.item.value),
-      child: Container(
-        margin: EdgeInsets.all(padding / 2),
-        decoration: BoxDecoration(
-          color: color,
-          borderRadius: BorderRadius.circular(2),
-        ),
-        padding: const EdgeInsets.all(4),
-        alignment: Alignment.center,
-        child: showLabel
-            ? Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(
-                    label,
-                    overflow: TextOverflow.ellipsis,
-                    maxLines: 1,
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: fontSize,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  if (r.height > 40)
-                    Text(
-                      pctText,
-                      style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.9),
-                        fontSize: fontSize - 1,
-                      ),
-                    ),
-                ],
-              )
-            : const SizedBox.shrink(),
-      ),
+      child: animate
+          ? AnimatedContainer(
+              duration: animationDuration,
+              curve: Curves.easeOutCubic,
+              margin: EdgeInsets.all(padding / 2),
+              decoration: BoxDecoration(
+                color: color,
+                borderRadius: BorderRadius.circular(2),
+              ),
+              padding: const EdgeInsets.all(4),
+              alignment: Alignment.center,
+              child: _CellLabel(
+                label: label,
+                pctText: pctText,
+                fontSize: fontSize,
+                showLabel: showLabel,
+                showPct: r.height > 40,
+              ),
+            )
+          : Container(
+              margin: EdgeInsets.all(padding / 2),
+              decoration: BoxDecoration(
+                color: color,
+                borderRadius: BorderRadius.circular(2),
+              ),
+              padding: const EdgeInsets.all(4),
+              alignment: Alignment.center,
+              child: _CellLabel(
+                label: label,
+                pctText: pctText,
+                fontSize: fontSize,
+                showLabel: showLabel,
+                showPct: r.height > 40,
+              ),
+            ),
     );
 
-    return Positioned(
-      left: r.left,
-      top: r.top,
-      width: r.width,
-      height: r.height,
-      child: Tooltip(message: '$label  ($pctText)', child: cell0),
+    final positioned = animate
+        ? AnimatedPositioned(
+            duration: animationDuration,
+            curve: Curves.easeOutCubic,
+            left: r.left,
+            top: r.top,
+            width: r.width,
+            height: r.height,
+            child: Tooltip(message: '$label  ($pctText)', child: inner),
+          )
+        : Positioned(
+            left: r.left,
+            top: r.top,
+            width: r.width,
+            height: r.height,
+            child: Tooltip(message: '$label  ($pctText)', child: inner),
+          );
+
+    return positioned;
+  }
+}
+
+class _CellLabel extends StatelessWidget {
+  const _CellLabel({
+    required this.label,
+    required this.pctText,
+    required this.fontSize,
+    required this.showLabel,
+    required this.showPct,
+  });
+  final String label;
+  final String pctText;
+  final double fontSize;
+  final bool showLabel;
+  final bool showPct;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!showLabel) return const SizedBox.shrink();
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Text(
+          label,
+          overflow: TextOverflow.ellipsis,
+          maxLines: 1,
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: fontSize,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        if (showPct)
+          Text(
+            pctText,
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.9),
+              fontSize: fontSize - 1,
+            ),
+          ),
+      ],
     );
   }
 }
