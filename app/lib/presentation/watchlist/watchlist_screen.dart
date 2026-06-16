@@ -37,16 +37,20 @@ class WatchlistScreen extends ConsumerWidget {
           ),
         ],
       ),
-      floatingActionButton: asyncCats.maybeWhen(
-        data: (cats) => FloatingActionButton.extended(
-          onPressed: cats.isEmpty
-              ? null
-              : () => _showAddEntryDialog(context, ref, cats),
+      // FAB only when BOTH async streams have resolved AND categories
+      // exist. Avoids the inconsistent state where categories errored
+      // but entries succeeded (or vice versa), which previously left
+      // the FAB enabled despite no usable destination category.
+      floatingActionButton: () {
+        final cats = asyncCats.valueOrNull;
+        final entriesReady = asyncEntries.hasValue || asyncEntries.hasError;
+        if (cats == null || !entriesReady || cats.isEmpty) return null;
+        return FloatingActionButton.extended(
+          onPressed: () => _showAddEntryDialog(context, ref, cats),
           icon: const Icon(Icons.add),
           label: const Text('종목 추가'),
-        ),
-        orElse: () => null,
-      ),
+        );
+      }(),
       body: asyncCats.when(
         data: (cats) => Column(
           children: [

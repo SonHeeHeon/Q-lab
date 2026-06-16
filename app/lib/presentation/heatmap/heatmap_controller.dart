@@ -30,6 +30,11 @@ class HeatmapNotifier extends AsyncNotifier<HeatmapResponse> {
   Timer? _timer;
   bool _disposeRegistered = false;
 
+  /// Small debounce so rapid SegmentedButton clicks (KOSPI ↔ KOSDAQ ↔
+  /// 섹터 ↔ 산업) collapse into a single fetch instead of overwhelming
+  /// the backend.
+  static const _kToggleDebounce = Duration(milliseconds: 300);
+
   @override
   Future<HeatmapResponse> build() async {
     final m = ref.watch(heatmapMarketProvider);
@@ -47,6 +52,12 @@ class HeatmapNotifier extends AsyncNotifier<HeatmapResponse> {
         _timer = null;
       });
     }
+
+    // Wait a short tick so consecutive toggles get coalesced into a
+    // single network call. If the build is canceled by another toggle
+    // before the delay completes, the in-flight Future is discarded
+    // by Riverpod and the next build wins.
+    await Future<void>.delayed(_kToggleDebounce);
 
     final res = await ref.read(heatmapApiProvider).getHeatmap(market: m, groupBy: g);
     ref.read(lastClientRefreshProvider.notifier).state = DateTime.now();

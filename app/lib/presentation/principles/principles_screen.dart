@@ -282,6 +282,11 @@ Future<void> _showCreateDialog(BuildContext context, WidgetRef ref) async {
   try {
     await ref.read(principlesApiProvider).create(title: t, body: b, category: cat);
     ref.invalidate(principlesProvider);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('"$t" 원칙이 추가되었습니다.')),
+      );
+    }
   } catch (e) {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(

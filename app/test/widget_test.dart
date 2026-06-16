@@ -1,30 +1,18 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
+/// Smoke test for the Q-Lab root widget. The full integration test
+/// suite lives in sibling files (parse_utils_test.dart,
+/// fromwire_fallback_test.dart, builder_factor_guard_test.dart).
+///
+/// We don't pumpWidget the full QLabApp here because it needs a
+/// SharedPreferences override at the ProviderScope level and would
+/// also kick off the Dio HTTP client. Real widget tests will land in
+/// V1.2 alongside golden tests for empty states.
+library;
 
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-
-import 'package:qlab/main.dart';
+import 'package:qlab/data/parse_utils.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
-
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
-
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
-
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+  test('smoke: parse_utils module loads', () {
+    expect(safeDouble(1.0), 1.0);
   });
 }
