@@ -29,3 +29,4 @@ extension TestResultsX on WidgetRef {
 String kisTestKey(KisAccount a) => 'kis:${a.wire}';
 const telegramTestKey = 'telegram';
 const llmTestKey = 'llm';
+const tossTestKey = 'toss';

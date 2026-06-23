@@ -53,6 +53,7 @@ class AppSettings {
     required this.llmModel,
     required this.llmApiKeyMasked,
     required this.llmCacheTtlHours,
+    this.toss,
   });
 
   final List<KisAccountStatus> accounts;
@@ -63,6 +64,7 @@ class AppSettings {
   final String llmModel;
   final String llmApiKeyMasked;
   final int llmCacheTtlHours;
+  final TossSettings? toss;
 
   factory AppSettings.fromJson(Map<String, dynamic> j) => AppSettings(
         accounts: ((j['accounts'] as List?) ?? const [])
@@ -76,6 +78,7 @@ class AppSettings {
         llmModel: (j['llm_model'] as String?) ?? 'gpt-4o',
         llmApiKeyMasked: (j['llm_api_key_masked'] as String?) ?? '',
         llmCacheTtlHours: (j['llm_cache_ttl_hours'] as num?)?.toInt() ?? 24,
+        toss: j['toss'] is Map ? TossSettings.fromJson(asJsonMap(j['toss'])) : null,
       );
 }
 
@@ -94,6 +97,54 @@ class KisAccountCreds {
         'app_key': appKey,
         'app_secret': appSecret,
         'account_no': accountNo,
+      };
+}
+
+class TossSettings {
+  TossSettings({
+    required this.hasCredentials,
+    required this.clientIdMasked,
+    this.accountSeq,
+    required this.isMock,
+    this.websocketSupported = false,
+    this.specVersion = '1.1.1',
+  });
+
+  final bool hasCredentials;
+  final String clientIdMasked;
+  final int? accountSeq;
+  final bool isMock;
+  final bool websocketSupported;
+  final String specVersion;
+
+  factory TossSettings.fromJson(Map<String, dynamic> j) => TossSettings(
+        hasCredentials: (j['has_credentials'] as bool?) ?? false,
+        clientIdMasked: (j['client_id_masked'] as String?) ?? '',
+        accountSeq: (j['account_seq'] as num?)?.toInt(),
+        isMock: (j['is_mock'] as bool?) ?? true,
+        websocketSupported: (j['websocket_supported'] as bool?) ?? false,
+        specVersion: (j['spec_version'] as String?) ?? '1.1.1',
+      );
+}
+
+class TossSettingsCreds {
+  TossSettingsCreds({
+    required this.clientId,
+    required this.clientSecret,
+    this.accountSeq,
+    this.isMock = true,
+  });
+
+  final String clientId;
+  final String clientSecret;
+  final int? accountSeq;
+  final bool isMock;
+
+  Map<String, dynamic> toJson() => {
+        'client_id': clientId,
+        'client_secret': clientSecret,
+        if (accountSeq != null) 'account_seq': accountSeq,
+        'is_mock': isMock,
       };
 }
 
@@ -167,6 +218,23 @@ class SettingsApi {
     final dio = _ref.read(dioProvider);
     try {
       final res = await dio.post<dynamic>('/api/settings/accounts/${type.wire}/test');
+      return TestResult.fromJson(asJsonMap(res.data));
+    } on ApiError catch (e) {
+      return TestResult(ok: false, message: e.message, details: e.details);
+    } catch (e) {
+      return TestResult.error('$e');
+    }
+  }
+
+  Future<void> saveTossSettings(TossSettingsCreds creds) async {
+    final dio = _ref.read(dioProvider);
+    await dio.post<dynamic>('/api/settings/toss', data: creds.toJson());
+  }
+
+  Future<TestResult> testToss() async {
+    final dio = _ref.read(dioProvider);
+    try {
+      final res = await dio.post<dynamic>('/api/settings/toss/test');
       return TestResult.fromJson(asJsonMap(res.data));
     } on ApiError catch (e) {
       return TestResult(ok: false, message: e.message, details: e.details);

@@ -20,6 +20,7 @@ from backend.app.core.config import Settings, settings
 from backend.app.schemas.portfolio import ApiEnvelope
 from backend.app.services.kis.rest_client import KISRestClient
 from backend.app.services.notify.telegram import TelegramClient
+from backend.app.services.toss.rest_client import TossRestClient
 from research.universe.kosdaq150 import (
     KOSDAQ150_CODES_FILE,
     KOSDAQ150RefreshResult,
@@ -52,6 +53,22 @@ class KisAccountStatusResponse(BaseModel):
     account_no_masked: str | None = None
 
 
+class TossSettingsRequest(BaseModel):
+    client_id: str = Field(min_length=1)
+    client_secret: str = Field(min_length=1)
+    account_seq: int | None = None
+    is_mock: bool = True
+
+
+class TossSettingsResponse(BaseModel):
+    has_credentials: bool
+    client_id_masked: str
+    account_seq: int | None
+    is_mock: bool
+    websocket_supported: bool = False
+    spec_version: str = "1.1.1"
+
+
 class KOSPI200UniverseStatusResponse(BaseModel):
     path: str
     exists: bool
@@ -77,6 +94,7 @@ class KOSPI200UniverseRefreshResponse(BaseModel):
 
 class AppSettingsResponse(BaseModel):
     accounts: list[KisAccountStatusResponse]
+    toss: TossSettingsResponse
     default_drop_threshold_pct: float
     telegram_chat_id: str | None
     telegram_token_masked: str
@@ -102,6 +120,7 @@ async def get_settings(
     accounts = await _account_statuses(session)
     data = AppSettingsResponse(
         accounts=accounts,
+        toss=_toss_status(rows),
         default_drop_threshold_pct=float(rows.get("default_drop_threshold_pct", "5.0")),
         telegram_chat_id=rows.get("telegram_chat_id") or settings.TELEGRAM_CHAT_ID or None,
         telegram_token_masked=_mask_secret(
@@ -134,6 +153,10 @@ async def patch_settings(
         "llm_model",
         "openai_api_key",
         "llm_cache_ttl_hours",
+        "toss_client_id",
+        "toss_client_secret",
+        "toss_account_seq",
+        "toss_is_mock",
     }
     updates = {
         key: str(value)
@@ -158,6 +181,69 @@ async def patch_settings(
             "message": send_result.message,
         }
     return ApiEnvelope(data=result, error=None)
+
+
+@router.post("/toss", response_model=ApiEnvelope[TossSettingsResponse])
+async def update_toss_settings(
+    payload: TossSettingsRequest,
+    session: AsyncSession = Depends(get_service_session),
+) -> ApiEnvelope[TossSettingsResponse]:
+    await _upsert_settings(
+        session,
+        {
+            "toss_client_id": payload.client_id,
+            "toss_client_secret": payload.client_secret,
+            "toss_account_seq": "" if payload.account_seq is None else str(payload.account_seq),
+            "toss_is_mock": str(payload.is_mock).lower(),
+        },
+    )
+    rows = await _settings_map(session)
+    return ApiEnvelope(data=_toss_status(rows), error=None)
+
+
+@router.post("/toss/test", response_model=ApiEnvelope[TestResultResponse])
+async def test_toss_settings(
+    session: AsyncSession = Depends(get_service_session),
+) -> ApiEnvelope[TestResultResponse]:
+    rows = await _settings_map(session)
+    client = TossRestClient.from_settings_map(rows)
+    if not client.is_configured:
+        return ApiEnvelope(
+            data=TestResultResponse(
+                ok=False,
+                message="Toss credentials are not configured.",
+            ),
+            error=None,
+        )
+    try:
+        accounts = await client.get_accounts()
+    except Exception as exc:
+        return ApiEnvelope(
+            data=TestResultResponse(
+                ok=False,
+                message=str(exc),
+                details={"broker": "TOSS"},
+            ),
+            error=None,
+        )
+    return ApiEnvelope(
+        data=TestResultResponse(
+            ok=True,
+            message="Toss account test succeeded.",
+            details={
+                "broker": "TOSS",
+                "accounts": [
+                    {
+                        "account_seq": account.account_seq,
+                        "account_no_masked": _mask_account_no(account.account_no),
+                        "account_type": account.account_type,
+                    }
+                    for account in accounts
+                ],
+            },
+        ),
+        error=None,
+    )
 
 
 @router.post("/accounts/{account_type}", response_model=ApiEnvelope[dict[str, Any]])
@@ -377,6 +463,32 @@ def _settings_with_account(account_type: AccountType, account: Account) -> Setti
             f"{prefix}_APP_SECRET": account.app_secret,
             f"{prefix}_ACCOUNT_NO": account.account_no,
         }
+    )
+
+
+def _toss_status(rows: dict[str, str]) -> TossSettingsResponse:
+    client_id = rows.get("toss_client_id") or settings.TOSS_CLIENT_ID
+    client_secret = (
+        rows.get("toss_client_secret")
+        or settings.TOSS_CLIENT_SECRET.get_secret_value()
+    )
+    account_seq_raw = rows.get("toss_account_seq")
+    account_seq = (
+        int(account_seq_raw)
+        if account_seq_raw and account_seq_raw.strip()
+        else settings.TOSS_ACCOUNT_SEQ
+    )
+    is_mock_raw = rows.get("toss_is_mock")
+    is_mock = (
+        settings.TOSS_IS_MOCK
+        if is_mock_raw is None
+        else is_mock_raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+    )
+    return TossSettingsResponse(
+        has_credentials=bool(client_id and client_secret),
+        client_id_masked=_mask_secret(client_id),
+        account_seq=account_seq,
+        is_mock=is_mock,
     )
 
 

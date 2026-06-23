@@ -13,6 +13,11 @@ class AccountType(StrEnum):
     ISA = "ISA"
 
 
+class BrokerType(StrEnum):
+    KIS = "KIS"
+    TOSS = "TOSS"
+
+
 class KISAccount(BaseModel):
     type: AccountType
     app_key: SecretStr

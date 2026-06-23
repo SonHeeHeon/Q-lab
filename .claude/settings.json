@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(flutter run *)",
+      "Bash(curl -s http://localhost:9000)",
+      "Bash(pkill -f \"flutter run -d chrome\")"
+    ]
+  }
+}

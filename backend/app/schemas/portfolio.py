@@ -9,7 +9,7 @@ from typing import Generic, TypeVar
 
 from pydantic import BaseModel, Field, field_validator
 
-from shared.domain.account import AccountType
+from shared.domain.account import AccountType, BrokerType
 from shared.domain.trade import TradeDirection
 
 T = TypeVar("T")
@@ -32,8 +32,10 @@ class OrderType(StrEnum):
 
 
 class OrderRequest(BaseModel):
-    account_type: AccountType
-    stock_code: str = Field(min_length=6, max_length=7)
+    broker: BrokerType = BrokerType.KIS
+    account_type: AccountType = AccountType.PAPER
+    account_id: str | None = None
+    stock_code: str = Field(min_length=1, max_length=20)
     direction: TradeDirection
     quantity: int = Field(gt=0)
     order_type: OrderType = OrderType.LIMIT
@@ -55,8 +57,13 @@ class OrderRequest(BaseModel):
 
 
 class PositionResponse(BaseModel):
+    broker: BrokerType = BrokerType.KIS
+    account_type: AccountType | None = None
+    account_id: str | None = None
     stock_code: str
     name: str | None = None
+    currency: str | None = None
+    market_country: str | None = None
     quantity: int
     avg_buy_price: Decimal
     current_price: Decimal | None = None
@@ -67,7 +74,10 @@ class PositionResponse(BaseModel):
 
 
 class PortfolioSummary(BaseModel):
-    account_type: AccountType
+    broker: BrokerType = BrokerType.KIS
+    account_type: AccountType | None = None
+    account_id: str | None = None
+    currency: str | None = "KRW"
     total_evaluation_amount: Decimal | None = None
     stock_evaluation_amount: Decimal | None = None
     purchase_amount: Decimal | None = None
@@ -77,20 +87,25 @@ class PortfolioSummary(BaseModel):
 
 
 class PortfolioResponse(BaseModel):
-    account_type: AccountType
+    broker: BrokerType = BrokerType.KIS
+    account_type: AccountType | None = None
+    account_id: str | None = None
     positions: list[PositionResponse]
     summary: PortfolioSummary
     raw_output2: dict[str, object] | None = None
 
 
 class OrderResponse(BaseModel):
-    account_type: AccountType
+    broker: BrokerType = BrokerType.KIS
+    account_type: AccountType | None = None
+    account_id: str | None = None
     stock_code: str
     direction: TradeDirection
     quantity: int
     order_type: OrderType
     price: Decimal | None = None
     kis_order_no: str | None = None
+    broker_order_no: str | None = None
     kis_order_time: str | None = None
     accepted_at: datetime
     raw: dict[str, object]
@@ -142,7 +157,10 @@ class BrokerOrderSyncResponse(BaseModel):
 
 
 class AccountSummaryResponse(BaseModel):
-    account_type: AccountType
+    broker: BrokerType = BrokerType.KIS
+    account_type: AccountType | None = None
+    account_id: str | None = None
+    currency: str | None = "KRW"
     total_value: Decimal
     cash_balance: Decimal
     total_pl: Decimal
@@ -150,7 +168,7 @@ class AccountSummaryResponse(BaseModel):
 
 
 class UnifiedPositionResponse(PositionResponse):
-    account_type: AccountType
+    account_type: AccountType | None = None
     stock_name: str | None = None
 
 

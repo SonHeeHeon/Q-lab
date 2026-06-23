@@ -5,10 +5,15 @@ from __future__ import annotations
 import json
 import logging
 from typing import TYPE_CHECKING, Any
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from backend.app.core.config import settings
 from backend.app.services.kis.ws_client import QuoteTick
+from backend.app.services.market_data.quotes import fetch_current_quotes
+from shared.domain.account import AccountType, BrokerType
 
 if TYPE_CHECKING:
     from backend.app.services.kis.ws_client import KISWebSocketClient
@@ -100,9 +105,36 @@ async def _handle_client_message(
     if action == "subscribe":
         quote_manager.subscribe(websocket, codes)
         if _upstream_client is not None:
-            await _upstream_client.subscribe(codes)
+            await _upstream_client.subscribe(_domestic_codes(codes))
+        await _send_initial_quote_snapshots(
+            websocket,
+            codes,
+            broker=BrokerType.KIS,
+            account_type=_upstream_client.account_type if _upstream_client else settings.KIS_DEFAULT_ACCOUNT,
+        )
         return {
             "type": "subscribed",
+            "codes": sorted(codes),
+        }
+
+    if action == "snapshot":
+        broker = _parse_broker(payload.get("broker"))
+        account_type = _parse_account_type(payload.get("account_type"))
+        account_id = (
+            str(payload.get("account_id")).strip()
+            if payload.get("account_id") is not None
+            else None
+        )
+        await _send_initial_quote_snapshots(
+            websocket,
+            codes,
+            broker=broker,
+            account_type=account_type,
+            account_id=account_id,
+        )
+        return {
+            "type": "snapshot",
+            "broker": broker.value,
             "codes": sorted(codes),
         }
 
@@ -124,3 +156,69 @@ def _normalize_codes(value: Any) -> set[str]:
     if not isinstance(value, list):
         return set()
     return {str(code).strip() for code in value if str(code).strip()}
+
+
+async def _send_initial_quote_snapshots(
+    websocket: WebSocket,
+    codes: set[str],
+    *,
+    broker: BrokerType,
+    account_type: AccountType,
+    account_id: str | None = None,
+) -> None:
+    """Send one REST quote immediately so UI sheets do not fall back to avg cost.
+
+    KIS websocket ticks are sparse outside active trading and may arrive after a
+    modal has already rendered. A cheap one-shot REST quote keeps portfolio rows
+    and order sheets aligned with the latest known market price without changing
+    the Flutter contract.
+    """
+
+    symbols = _domestic_codes(codes) if broker is BrokerType.KIS else {
+        str(code).strip().upper() for code in codes if str(code).strip()
+    }
+    if not symbols:
+        return
+
+    result = await fetch_current_quotes(
+        broker=broker,
+        symbols=sorted(symbols),
+        account_type=account_type,
+        account_id=account_id,
+    )
+    timestamp = datetime.now(ZoneInfo(settings.APSCHEDULER_TIMEZONE))
+    for quote in result.quotes:
+        await websocket.send_json(
+            {
+                "type": "tick",
+                "code": quote.symbol,
+                "price": float(quote.price),
+                "volume": quote.volume or 0,
+                "change_pct": float(quote.change_pct or 0),
+                "timestamp": (
+                    quote.timestamp.isoformat()
+                    if isinstance(quote.timestamp, datetime)
+                    else (quote.timestamp or timestamp.isoformat())
+                ),
+            }
+        )
+    for symbol, error in result.errors.items():
+        logger.debug("failed to send quote snapshot for %s/%s: %s", broker.value, symbol, error)
+
+
+def _domestic_codes(codes: set[str]) -> set[str]:
+    return {code.zfill(6) for code in codes if code.isdigit()}
+
+
+def _parse_broker(value: Any) -> BrokerType:
+    try:
+        return BrokerType(str(value or BrokerType.KIS.value).upper())
+    except ValueError:
+        return BrokerType.KIS
+
+
+def _parse_account_type(value: Any) -> AccountType:
+    try:
+        return AccountType(str(value or settings.KIS_DEFAULT_ACCOUNT.value).upper())
+    except ValueError:
+        return settings.KIS_DEFAULT_ACCOUNT

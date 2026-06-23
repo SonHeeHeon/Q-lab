@@ -197,6 +197,7 @@ class KISRestClient:
         )
         output = self._as_dict(payload.get("output"))
 
+        order_no = self._first_present(output, "ODNO", "odno", "ord_no")
         return OrderResponse(
             account_type=request.account_type,
             stock_code=request.stock_code,
@@ -204,7 +205,8 @@ class KISRestClient:
             quantity=request.quantity,
             order_type=request.order_type,
             price=request.price,
-            kis_order_no=self._first_present(output, "ODNO", "odno", "ord_no"),
+            kis_order_no=order_no,
+            broker_order_no=order_no,
             kis_order_time=self._first_present(output, "ORD_TMD", "ord_tmd"),
             accepted_at=datetime.now().astimezone(),
             raw=output or payload,
@@ -620,21 +622,63 @@ class KISRestClient:
             return None
 
     def _parse_position(self, row: dict[str, Any]) -> PositionResponse:
-        quantity = self._to_int(row.get("hldg_qty"))
-        avg_buy_price = self._to_decimal(row.get("pchs_avg_pric"))
-        current_price = self._to_decimal(row.get("prpr"))
-        unrealized_pl = self._to_decimal(row.get("evlu_pfls_amt"))
+        stock_code = self._first_present(row, "pdno", "PDNO", "stock_code") or ""
+        if stock_code.isdigit():
+            stock_code = stock_code.zfill(6)
+        quantity = self._first_int(row, "hldg_qty", "HLDG_QTY")
+        avg_buy_price = self._first_decimal(
+            row,
+            "pchs_avg_pric",
+            "PCHS_AVG_PRIC",
+            "avg_buy_price",
+        ) or Decimal("0")
+        current_price = self._first_decimal(
+            row,
+            "prpr",
+            "PRPR",
+            "stck_prpr",
+            "STCK_PRPR",
+            "now_pric",
+            "NOW_PRIC",
+            "current_price",
+        )
+        unrealized_pl = self._first_decimal(
+            row,
+            "evlu_pfls_amt",
+            "EVLU_PFLS_AMT",
+            "unrealized_pl",
+        ) or Decimal("0")
 
         return PositionResponse(
-            stock_code=str(row.get("pdno") or row.get("PDNO") or ""),
-            name=self._optional_str(row.get("prdt_name") or row.get("PRDT_NAME")),
+            stock_code=stock_code,
+            name=self._optional_str(
+                row.get("prdt_name")
+                or row.get("PRDT_NAME")
+                or row.get("hts_kor_isnm")
+                or row.get("HTS_KOR_ISNM")
+            ),
             quantity=quantity,
             avg_buy_price=avg_buy_price,
             current_price=current_price,
-            purchase_amount=self._to_optional_decimal(row.get("pchs_amt")),
-            evaluation_amount=self._to_optional_decimal(row.get("evlu_amt")),
+            purchase_amount=self._first_decimal(
+                row,
+                "pchs_amt",
+                "PCHS_AMT",
+                "purchase_amount",
+            ),
+            evaluation_amount=self._first_decimal(
+                row,
+                "evlu_amt",
+                "EVLU_AMT",
+                "evaluation_amount",
+            ),
             unrealized_pl=unrealized_pl,
-            unrealized_pl_rate=self._to_optional_decimal(row.get("evlu_pfls_rt")),
+            unrealized_pl_rate=self._first_decimal(
+                row,
+                "evlu_pfls_rt",
+                "EVLU_PFLS_RT",
+                "unrealized_pl_rate",
+            ),
         )
 
     def _parse_summary(

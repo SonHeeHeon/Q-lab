@@ -8,8 +8,9 @@ import logging
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
-from fastapi import APIRouter, BackgroundTasks, Depends, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
 from fastapi.responses import JSONResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.schemas.portfolio import (
@@ -31,15 +32,19 @@ from backend.app.schemas.portfolio import (
     UnifiedPositionResponse,
 )
 from backend.app.services.kis.rest_client import KISRestClient, KISRestError
+from backend.app.services.toss.rest_client import TossRestClient, TossRestError
 from backend.app.core.config import settings
+from backend.app.services.brokers.base import BrokerAccountRef
 from backend.app.services.kis.order_tracker import (
     sync_external_orders_once,
     track_trade_until_terminal,
 )
 from backend.app.services.market_data.names import lookup_stock_names
-from shared.db.models import Account, Trade
+from backend.app.services.market_data.quotes import fetch_current_quotes
+from shared.db.models import Account, Setting, Trade
 from shared.db.session import get_service_session
 from shared.domain.account import AccountType
+from shared.domain.account import BrokerType
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 logger = logging.getLogger(__name__)
@@ -52,24 +57,63 @@ def get_kis_rest_client() -> KISRestClient:
 @router.get("", response_model=UnifiedPortfolioEnvelope)
 async def get_unified_portfolio(
     kis_client: KISRestClient = Depends(get_kis_rest_client),
+    broker: str = Query(default="ALL", pattern="^(ALL|KIS|TOSS)$"),
+    session: AsyncSession = Depends(get_service_session),
 ) -> UnifiedPortfolioEnvelope:
-    results = await asyncio.gather(
-        *(kis_client.get_balance(account_type) for account_type in AccountType),
-        return_exceptions=True,
-    )
-
     portfolios: list[PortfolioResponse] = []
     errors: list[dict[str, object]] = []
-    for account_type, result in zip(AccountType, results, strict=True):
-        if isinstance(result, Exception):
+    selected_broker = str(broker).upper()
+
+    if selected_broker in {"ALL", BrokerType.KIS.value}:
+        results = await asyncio.gather(
+            *(kis_client.get_balance(account_type) for account_type in AccountType),
+            return_exceptions=True,
+        )
+        for account_type, result in zip(AccountType, results, strict=True):
+            if isinstance(result, Exception):
+                errors.append(
+                    {
+                        "broker": BrokerType.KIS.value,
+                        "account_type": account_type.value,
+                        "message": str(result),
+                    }
+                )
+                continue
+            result = await _enrich_position_prices(result, BrokerType.KIS)
+            portfolios.append(await _enrich_position_names(result))
+
+    if selected_broker in {"ALL", BrokerType.TOSS.value}:
+        rows = await _settings_map(session)
+        toss_client = TossRestClient.from_settings_map(rows)
+        if toss_client.is_configured:
+            try:
+                account_id = rows.get("toss_account_seq") or (
+                    str(settings.TOSS_ACCOUNT_SEQ)
+                    if settings.TOSS_ACCOUNT_SEQ is not None
+                    else None
+                )
+                portfolio = await toss_client.get_balance(
+                    BrokerAccountRef(
+                        broker=BrokerType.TOSS,
+                        account_id=account_id,
+                    )
+                )
+                portfolio = await _enrich_position_prices(portfolio, BrokerType.TOSS)
+                portfolios.append(await _enrich_position_names(portfolio))
+            except Exception as exc:
+                errors.append(
+                    {
+                        "broker": BrokerType.TOSS.value,
+                        "message": str(exc),
+                    }
+                )
+        elif selected_broker == BrokerType.TOSS.value:
             errors.append(
                 {
-                    "account_type": account_type.value,
-                    "message": str(result),
+                    "broker": BrokerType.TOSS.value,
+                    "message": "Toss credentials are not configured.",
                 }
             )
-            continue
-        portfolios.append(await _enrich_position_names(result))
 
     return UnifiedPortfolioEnvelope(
         data=_unified_response(portfolios, errors),
@@ -86,6 +130,7 @@ async def get_portfolio_account(
         portfolio = await kis_client.get_balance(account_type)
     except KISRestError as exc:
         return _error_response("KIS_BALANCE_FAILED", str(exc), exc)
+    portfolio = await _enrich_position_prices(portfolio, BrokerType.KIS)
     portfolio = await _enrich_position_names(portfolio)
     return PortfolioEnvelope(data=portfolio, error=None)
 
@@ -160,12 +205,26 @@ async def place_order(
     session: AsyncSession = Depends(get_service_session),
 ) -> OrderEnvelope | JSONResponse:
     try:
-        order = await kis_client.place_order(request)
+        if request.broker is BrokerType.KIS and not request.stock_code.isdigit():
+            request.broker = BrokerType.TOSS
+        if request.broker is BrokerType.TOSS:
+            rows = await _settings_map(session)
+            order = await TossRestClient.from_settings_map(rows).place_order(request)
+        else:
+            request.stock_code = request.stock_code.zfill(6)
+            order = await kis_client.place_order(request)
     except KISRestError as exc:
         return _error_response("KIS_ORDER_FAILED", str(exc), exc)
+    except TossRestError as exc:
+        return _error_response("TOSS_ORDER_FAILED", str(exc), exc)
 
-    persistence = await _persist_trade_skeleton(session, order)
-    if persistence.persisted and persistence.trade_id is not None and order.kis_order_no:
+    persistence = await _persist_trade_skeleton(session, order, request)
+    if (
+        request.broker is BrokerType.KIS
+        and persistence.persisted
+        and persistence.trade_id is not None
+        and order.kis_order_no
+    ):
         background_tasks.add_task(_schedule_order_tracking, persistence.trade_id)
     return OrderEnvelope(
         data=OrderEnvelopeData(order=order, trade_persistence=persistence),
@@ -176,25 +235,35 @@ async def place_order(
 async def _persist_trade_skeleton(
     session: AsyncSession,
     order,
+    request: OrderRequest,
 ) -> TradePersistResult:
     # This is intentionally a submission-side skeleton. The order tracker updates
     # it with broker fill state, actual price, fees, taxes, and fill timestamp.
     try:
-        await _ensure_account_row(session, order.account_type)
+        account_type = order.account_type or request.account_type
+        await _ensure_account_row(session, account_type)
         trade = Trade(
-            account_type=order.account_type.value,
+            account_type=account_type.value,
             stock_code=order.stock_code,
             direction=order.direction.value,
             quantity=order.quantity,
             price=order.price or Decimal("0"),
             executed_at=order.accepted_at,
-            kis_order_no=order.kis_order_no,
+            kis_order_no=order.kis_order_no or order.broker_order_no,
             status="PENDING",
             submitted_at=order.accepted_at,
             filled_quantity=0,
             fees=Decimal("0"),
             taxes=Decimal("0"),
-            raw_order=json.dumps(order.raw, ensure_ascii=False, default=str),
+            raw_order=json.dumps(
+                {
+                    "broker": order.broker.value,
+                    "account_id": order.account_id,
+                    "raw": order.raw,
+                },
+                ensure_ascii=False,
+                default=str,
+            ),
         )
         session.add(trade)
         await session.commit()
@@ -236,7 +305,12 @@ async def _ensure_account_row(
     # this placeholder row only satisfies the trades.account_type FK.
 
 
-def _error_response(code: str, message: str, exc: KISRestError) -> JSONResponse:
+async def _settings_map(session: AsyncSession) -> dict[str, str]:
+    result = await session.execute(select(Setting))
+    return {row.key: row.value for row in result.scalars()}
+
+
+def _error_response(code: str, message: str, exc: KISRestError | TossRestError) -> JSONResponse:
     envelope = ApiEnvelope(
         data=None,
         error=ApiError(
@@ -255,7 +329,7 @@ async def _enrich_position_names(portfolio: PortfolioResponse) -> PortfolioRespo
     missing_codes = [
         position.stock_code
         for position in portfolio.positions
-        if not position.name and position.stock_code
+        if not position.name and position.stock_code and position.stock_code.isdigit()
     ]
     if not missing_codes:
         return portfolio
@@ -264,6 +338,66 @@ async def _enrich_position_names(portfolio: PortfolioResponse) -> PortfolioRespo
     for position in portfolio.positions:
         if not position.name:
             position.name = names.get(position.stock_code) or position.stock_code
+    return portfolio
+
+
+async def _enrich_position_prices(
+    portfolio: PortfolioResponse,
+    broker: BrokerType,
+) -> PortfolioResponse:
+    symbols = [
+        position.stock_code
+        for position in portfolio.positions
+        if position.stock_code
+        and (
+            position.current_price is None
+            or position.current_price <= Decimal("0")
+        )
+    ]
+
+    for position in portfolio.positions:
+        position.broker = broker
+        if broker is BrokerType.KIS:
+            position.account_type = portfolio.account_type
+            position.currency = position.currency or "KRW"
+            position.market_country = position.market_country or "KR"
+            if position.stock_code.isdigit():
+                position.stock_code = position.stock_code.zfill(6)
+        else:
+            position.account_id = portfolio.account_id
+            position.currency = position.currency or (
+                "KRW" if position.stock_code.isdigit() else "USD"
+            )
+            position.market_country = position.market_country or (
+                "KR" if position.stock_code.isdigit() else "US"
+            )
+
+    if not symbols:
+        return portfolio
+
+    account_type = portfolio.account_type or settings.KIS_DEFAULT_ACCOUNT
+    result = await fetch_current_quotes(
+        broker=broker,
+        symbols=symbols,
+        account_type=account_type,
+        account_id=portfolio.account_id,
+    )
+    quotes = {quote.symbol.upper(): quote for quote in result.quotes}
+    for position in portfolio.positions:
+        quote = quotes.get(position.stock_code.upper())
+        if quote is None and position.stock_code.isdigit():
+            quote = quotes.get(position.stock_code.zfill(6))
+        if quote is None:
+            continue
+        position.current_price = quote.price
+        position.currency = position.currency or quote.currency
+        if position.purchase_amount is None:
+            position.purchase_amount = position.avg_buy_price * Decimal(position.quantity)
+        if position.evaluation_amount is None:
+            position.evaluation_amount = quote.price * Decimal(position.quantity)
+        if position.purchase_amount is not None:
+            position.unrealized_pl = position.evaluation_amount - position.purchase_amount
+
     return portfolio
 
 
@@ -291,7 +425,10 @@ def _unified_response(
         total_cost += account_cost
         accounts.append(
             AccountSummaryResponse(
+                broker=portfolio.broker,
                 account_type=portfolio.account_type,
+                account_id=portfolio.account_id,
+                currency=summary.currency,
                 total_value=account_value,
                 cash_balance=account_cash,
                 total_pl=account_pl,
@@ -303,10 +440,14 @@ def _unified_response(
             stock_name = position.name or position.stock_code
             positions.append(
                 UnifiedPositionResponse(
+                    broker=portfolio.broker,
                     account_type=portfolio.account_type,
+                    account_id=portfolio.account_id,
                     stock_code=position.stock_code,
                     name=stock_name,
                     stock_name=stock_name,
+                    currency=position.currency,
+                    market_country=position.market_country,
                     quantity=position.quantity,
                     avg_buy_price=position.avg_buy_price,
                     current_price=position.current_price,

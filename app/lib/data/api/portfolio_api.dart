@@ -15,6 +15,143 @@ import '../../domain/entities/position.dart';
 import '../parse_utils.dart';
 import 'api_client.dart';
 
+enum BrokerType {
+  KIS('KIS', '한국투자증권', '한투'),
+  TOSS('TOSS', '토스증권', '토스');
+
+  const BrokerType(this.wire, this.label, this.shortLabel);
+  final String wire;
+  final String label;
+  final String shortLabel;
+
+  static BrokerType fromWire(String? s) => BrokerType.values.firstWhere(
+        (e) => e.wire == (s ?? '').toUpperCase(),
+        orElse: () => BrokerType.KIS,
+      );
+}
+
+enum BrokerFilter { all, kis, toss }
+
+class UnifiedAccountSummary {
+  UnifiedAccountSummary({
+    required this.broker,
+    this.accountType,
+    this.accountId,
+    this.currency,
+    required this.totalValue,
+    required this.cashBalance,
+    required this.totalPl,
+    required this.totalPlPct,
+  });
+
+  final BrokerType broker;
+  final KisAccount? accountType;
+  final String? accountId;
+  final String? currency;
+  final double totalValue;
+  final double cashBalance;
+  final double totalPl;
+  final double totalPlPct;
+
+  factory UnifiedAccountSummary.fromJson(Map<String, dynamic> j) =>
+      UnifiedAccountSummary(
+        broker: BrokerType.fromWire(j['broker'] as String?),
+        accountType: j['account_type'] != null
+            ? KisAccount.fromWire(j['account_type'] as String)
+            : null,
+        accountId: j['account_id'] as String?,
+        currency: j['currency'] as String?,
+        totalValue: _d(j['total_value']),
+        cashBalance: _d(j['cash_balance']),
+        totalPl: _d(j['total_pl']),
+        totalPlPct: _d(j['total_pl_pct']),
+      );
+}
+
+class UnifiedPosition {
+  UnifiedPosition({
+    required this.broker,
+    this.accountType,
+    this.accountId,
+    required this.stockCode,
+    required this.stockName,
+    required this.quantity,
+    required this.avgBuyPrice,
+    this.currentPrice,
+    this.unrealizedPl,
+    this.unrealizedPlPct,
+  });
+
+  final BrokerType broker;
+  final KisAccount? accountType;
+  final String? accountId;
+  final String stockCode;
+  final String stockName;
+  final int quantity;
+  final double avgBuyPrice;
+  double? currentPrice;
+  final double? unrealizedPl;
+  final double? unrealizedPlPct;
+
+  double get marketValue => (currentPrice ?? avgBuyPrice) * quantity;
+  double get costBasis => avgBuyPrice * quantity;
+  double get plValue => unrealizedPl ?? (marketValue - costBasis);
+  double get plPct =>
+      unrealizedPlPct ?? (costBasis == 0 ? 0 : (plValue / costBasis) * 100);
+
+  factory UnifiedPosition.fromJson(Map<String, dynamic> j) => UnifiedPosition(
+        broker: BrokerType.fromWire(j['broker'] as String?),
+        accountType: j['account_type'] != null
+            ? KisAccount.fromWire(j['account_type'] as String)
+            : null,
+        accountId: j['account_id'] as String?,
+        stockCode: (j['stock_code'] ?? '') as String,
+        stockName: (j['stock_name'] ?? j['name'] ?? '') as String,
+        quantity: safeInt(j['quantity'], hint: 'unified.qty'),
+        avgBuyPrice: _d(j['avg_buy_price']),
+        currentPrice: safeDoubleOrNull(j['current_price'], hint: 'unified.cur'),
+        unrealizedPl: safeDoubleOrNull(j['unrealized_pl'], hint: 'unified.pl'),
+        unrealizedPlPct:
+            safeDoubleOrNull(j['unrealized_pl_rate'], hint: 'unified.plpct'),
+      );
+}
+
+class UnifiedPortfolio {
+  UnifiedPortfolio({
+    required this.asOf,
+    required this.totalValue,
+    required this.totalPl,
+    required this.totalPlPct,
+    required this.accounts,
+    required this.positions,
+    this.errors = const [],
+  });
+
+  final DateTime asOf;
+  final double totalValue;
+  final double totalPl;
+  final double totalPlPct;
+  final List<UnifiedAccountSummary> accounts;
+  final List<UnifiedPosition> positions;
+  final List<Map<String, dynamic>> errors;
+
+  factory UnifiedPortfolio.fromJson(Map<String, dynamic> j) => UnifiedPortfolio(
+        asOf: DateTime.tryParse(j['as_of'] as String? ?? '') ?? DateTime.now(),
+        totalValue: _d(j['total_value']),
+        totalPl: _d(j['total_pl']),
+        totalPlPct: _d(j['total_pl_pct']),
+        accounts: ((j['accounts'] as List?) ?? const [])
+            .map((e) => UnifiedAccountSummary.fromJson(asJsonMap(e)))
+            .toList(),
+        positions: ((j['positions'] as List?) ?? const [])
+            .map((e) => UnifiedPosition.fromJson(asJsonMap(e)))
+            .toList(),
+        errors: ((j['errors'] as List?) ?? const [])
+            .map((e) => asJsonMap(e))
+            .toList(),
+      );
+}
+
 class AccountDetail {
   AccountDetail({
     required this.accountType,
@@ -105,18 +242,21 @@ class PlaceOrderRequest {
     required this.direction,
     required this.quantity,
     this.price,
+    this.broker = BrokerType.KIS,
   }) : orderType = price == null ? 'MARKET' : 'LIMIT';
 
   final KisAccount accountType;
   final String stockCode;
   final OrderDirection direction;
   final int quantity;
+  final BrokerType broker;
 
   /// null = 시장가(MARKET); 값 지정 시 지정가(LIMIT)
   final double? price;
   final String orderType;
 
   Map<String, dynamic> toJson() => {
+        'broker': broker.wire,
         'account_type': accountType.wire,
         'stock_code': stockCode,
         'direction': direction.name.toUpperCase(),
@@ -234,6 +374,20 @@ class PortfolioApi {
     );
     final ok = results.whereType<AccountDetail>().toList();
     return UnifiedBalance.fromAccounts(ok);
+  }
+
+  Future<UnifiedPortfolio> getUnifiedPortfolio(BrokerFilter filter) async {
+    final dio = _ref.read(dioProvider);
+    final brokerParam = switch (filter) {
+      BrokerFilter.all => 'ALL',
+      BrokerFilter.kis => 'KIS',
+      BrokerFilter.toss => 'TOSS',
+    };
+    final res = await dio.get<dynamic>(
+      '/api/portfolio',
+      queryParameters: {'broker': brokerParam},
+    );
+    return UnifiedPortfolio.fromJson(asJsonMap(res.data));
   }
 
   Future<TradeReceipt> placeOrder(PlaceOrderRequest req) async {

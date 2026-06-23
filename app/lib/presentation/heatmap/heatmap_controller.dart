@@ -67,11 +67,17 @@ class HeatmapNotifier extends AsyncNotifier<HeatmapResponse> {
   /// Manual or timer-driven re-fetch. Keeps the previous data visible
   /// while loading (no `state = AsyncLoading()`), so cells animate
   /// smoothly instead of flashing.
-  Future<void> refresh() async {
+  ///
+  /// [force] maps to the backend `force_refresh` flag: the periodic timer
+  /// calls `refresh()` (force=false, serves cache); the toolbar's manual
+  /// refresh button calls `refresh(force: true)` to force an upstream pull.
+  Future<void> refresh({bool force = false}) async {
     final m = ref.read(heatmapMarketProvider);
     final g = ref.read(heatmapGroupByProvider);
     final next = await AsyncValue.guard(
-      () => ref.read(heatmapApiProvider).getHeatmap(market: m, groupBy: g),
+      () => ref
+          .read(heatmapApiProvider)
+          .getHeatmap(market: m, groupBy: g, forceRefresh: force),
     );
     // Only commit successful refreshes; on error keep the previous data
     // and just log — avoids the screen blanking mid-polling.
@@ -79,7 +85,7 @@ class HeatmapNotifier extends AsyncNotifier<HeatmapResponse> {
       state = next;
       ref.read(lastClientRefreshProvider.notifier).state = DateTime.now();
     } else {
-      debugPrint('[heatmap] periodic refresh failed: ${next.error}');
+      debugPrint('[heatmap] refresh failed (force=$force): ${next.error}');
     }
   }
 }

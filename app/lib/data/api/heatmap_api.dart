@@ -129,21 +129,38 @@ class HeatmapResponse {
     required this.groupBy,
     this.asOf,
     this.updatedAt,
+    this.servedAt,
     required this.session,
     this.source,
+    this.priceBasis,
+    this.warning,
     required this.nodes,
   });
 
   final String market;
   final String groupBy;
+
+  /// 가격 기준일 — the trading day the prices belong to.
   final DateTime? asOf;
 
   /// Backend cache pipeline's last refresh timestamp. Distinct from
   /// `asOf` (the trading-day date). Used by the UI for the "X분 전 갱신"
   /// label.
   final DateTime? updatedAt;
+
+  /// 조회 시각 — when the backend served this response to the client.
+  /// Distinct from `asOf`: served_at moves on every request, as_of only
+  /// changes when the underlying price date does.
+  final DateTime? servedAt;
   final MarketSession session;
   final String? source;
+
+  /// How the prices were derived, e.g. "DB_CLOSE" (종가) or a live basis.
+  final String? priceBasis;
+
+  /// Optional advisory from the backend (e.g. stale snapshot, fallback
+  /// source). Shown as a warning badge when present.
+  final String? warning;
   final List<HeatmapNode> nodes;
 
   List<HeatmapNode> get stocks => nodes.where((n) => n.isStock).toList();
@@ -156,8 +173,13 @@ class HeatmapResponse {
         updatedAt: j['updated_at'] == null
             ? null
             : DateTime.tryParse(j['updated_at'] as String),
+        servedAt: j['served_at'] == null
+            ? null
+            : DateTime.tryParse(j['served_at'] as String),
         session: MarketSession.fromWire(j['market_session'] as String?),
         source: j['source'] as String?,
+        priceBasis: j['price_basis'] as String?,
+        warning: j['warning'] as String?,
         nodes: ((j['nodes'] as List?) ?? const [])
             .map((e) => HeatmapNode.fromJson(asJsonMap(e)))
             .toList(),
@@ -168,14 +190,23 @@ class HeatmapApi {
   HeatmapApi(this._ref);
   final Ref _ref;
 
+  /// [forceRefresh] maps to the backend `force_refresh` query flag.
+  /// Automatic polling passes `false` (serves the cached snapshot); the
+  /// toolbar's manual refresh button passes `true` to force a fresh
+  /// upstream pull.
   Future<HeatmapResponse> getHeatmap({
     HeatmapMarket market = HeatmapMarket.kospi,
     HeatmapGroupBy groupBy = HeatmapGroupBy.sector,
+    bool forceRefresh = false,
   }) async {
     final dio = _ref.read(dioProvider);
     final res = await dio.get<dynamic>(
       '/api/heatmap',
-      queryParameters: {'market': market.wire, 'group_by': groupBy.wire},
+      queryParameters: {
+        'market': market.wire,
+        'group_by': groupBy.wire,
+        if (forceRefresh) 'force_refresh': true,
+      },
     );
     return HeatmapResponse.fromJson(asJsonMap(res.data));
   }

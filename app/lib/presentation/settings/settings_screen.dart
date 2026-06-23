@@ -19,6 +19,9 @@ import '../../domain/entities/account.dart';
 import '../portfolio/portfolio_controller.dart';
 import 'settings_controller.dart';
 
+// Toss brand teal — matches Toss Securities identity
+const _tossColor = Color(0xFF3182F6);
+
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
 
@@ -117,8 +120,12 @@ class _SettingsBody extends ConsumerWidget {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        _SectionHeader('🔐 KIS 계좌'),
+        _SectionHeader('🔐 한국투자증권 (KIS) 계좌'),
         _KisAccountList(settings: settings),
+        const SizedBox(height: 24),
+
+        _SectionHeader('🟦 토스증권 (Toss) 연동'),
+        _TossBlock(settings: settings),
         const SizedBox(height: 24),
 
         _SectionHeader('🔔 알림 (Telegram)'),
@@ -324,6 +331,252 @@ class _KisAccountRow extends ConsumerWidget {
         );
       }
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Toss Securities
+// ---------------------------------------------------------------------------
+
+class _TossBlock extends ConsumerStatefulWidget {
+  const _TossBlock({required this.settings});
+  final AppSettings settings;
+
+  @override
+  ConsumerState<_TossBlock> createState() => _TossBlockState();
+}
+
+class _TossBlockState extends ConsumerState<_TossBlock> {
+  final _clientId = TextEditingController();
+  final _clientSecret = TextEditingController();
+  final _accountSeq = TextEditingController();
+  bool _isMock = true;
+  bool _saving = false;
+
+  @override
+  void dispose() {
+    _clientId.dispose();
+    _clientSecret.dispose();
+    _accountSeq.dispose();
+    super.dispose();
+  }
+
+  TossSettings? get _toss => widget.settings.toss;
+
+  Future<void> _save() async {
+    final id = _clientId.text.trim();
+    final secret = _clientSecret.text.trim();
+    if (id.isEmpty || secret.isEmpty) return;
+
+    setState(() => _saving = true);
+    try {
+      await ref.read(settingsApiProvider).saveTossSettings(
+            TossSettingsCreds(
+              clientId: id,
+              clientSecret: secret,
+              accountSeq: int.tryParse(_accountSeq.text.trim()),
+              isMock: _isMock,
+            ),
+          );
+      _clientId.clear();
+      _clientSecret.clear();
+      _accountSeq.clear();
+      ref.invalidate(appSettingsProvider);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('토스증권 인증 정보 저장 완료')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('저장 실패: $e'), backgroundColor: Colors.redAccent),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _test() async {
+    ref.setTestResult(tossTestKey, TestResult(ok: false, message: '연결 테스트 중...'));
+    final r = await ref.read(settingsApiProvider).testToss();
+    ref.setTestResult(tossTestKey, r);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final toss = _toss;
+    final test = ref.watch(testResultsProvider)[tossTestKey];
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Status banner
+            Row(
+              children: [
+                Container(
+                  width: 10,
+                  height: 10,
+                  decoration: BoxDecoration(
+                    color: (toss?.hasCredentials ?? false) ? Colors.green : theme.colorScheme.outline,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  (toss?.hasCredentials ?? false)
+                      ? '연동됨  ·  Client ID: ${toss!.clientIdMasked.isEmpty ? '(설정됨)' : toss.clientIdMasked}'
+                      : '미연동 — Open API 키를 입력하세요',
+                  style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+                ),
+                if (toss?.hasCredentials ?? false) ...[
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: (toss?.isMock ?? true)
+                          ? Colors.amber.withValues(alpha: 0.15)
+                          : Colors.green.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      (toss?.isMock ?? true) ? '모의(Mock)' : '실전',
+                      style: TextStyle(
+                        color: (toss?.isMock ?? true) ? Colors.amber.shade800 : Colors.green,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  if (toss?.accountSeq != null) ...[
+                    const SizedBox(width: 8),
+                    Text('계좌 #${toss!.accountSeq}',
+                        style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline)),
+                  ],
+                ],
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Toss Open API v${toss?.specVersion ?? '1.1.1'}  ·  WebSocket: ${(toss?.websocketSupported ?? false) ? '지원' : '미지원 (REST-only)'}',
+              style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline),
+            ),
+            const Divider(height: 24),
+
+            // Credentials form
+            TextField(
+              controller: _clientId,
+              decoration: const InputDecoration(
+                labelText: 'Client ID',
+                hintText: '토스증권 Open API Client ID',
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _clientSecret,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: 'Client Secret',
+                hintText: '입력 후 ••••• 로 마스킹됩니다',
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _accountSeq,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: '계좌 번호 (account_seq, 선택)',
+                hintText: '예: 1',
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Switch(
+                  value: _isMock,
+                  onChanged: (v) => setState(() => _isMock = v),
+                  activeColor: _tossColor,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  _isMock ? '모의(Mock) 모드' : '실전 모드',
+                  style: theme.textTheme.bodyMedium,
+                ),
+                const Spacer(),
+                if (_isMock)
+                  Text('⚠️ 실전 거래 아님', style: theme.textTheme.labelSmall?.copyWith(color: Colors.amber.shade800)),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                FilledButton.icon(
+                  onPressed: _saving ? null : _save,
+                  icon: _saving
+                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Icon(Icons.link, size: 18),
+                  label: Text(_saving ? '저장 중...' : '연동하기'),
+                  style: FilledButton.styleFrom(backgroundColor: _tossColor),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: (toss?.hasCredentials ?? false) ? _test : null,
+                  icon: const Icon(Icons.network_check, size: 18),
+                  label: const Text('연결 테스트'),
+                ),
+              ],
+            ),
+            if (test != null) ...[
+              const SizedBox(height: 10),
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: (test.ok ? Colors.green : theme.colorScheme.error).withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: (test.ok ? Colors.green : theme.colorScheme.error).withValues(alpha: 0.3),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      test.ok ? '✅ ${test.message ?? "연결 성공"}' : '❌ ${test.message ?? "연결 실패"}',
+                      style: TextStyle(
+                        color: test.ok ? Colors.green : theme.colorScheme.error,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    if (test.ok && test.details != null) ...[
+                      const SizedBox(height: 6),
+                      for (final acct in (test.details!['accounts'] as List? ?? []))
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Text(
+                            '계좌 #${(acct as Map)['account_seq']}  ·  ${acct['account_type']}  ·  ${acct['account_no_masked'] ?? ''}',
+                            style: theme.textTheme.bodySmall,
+                          ),
+                        ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+            const SizedBox(height: 8),
+            Text(
+              '토스증권 Open API 콘솔(openapi.toss.im)에서 발급받은 Client ID/Secret을 입력하세요.',
+              style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

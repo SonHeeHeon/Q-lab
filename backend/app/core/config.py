@@ -6,10 +6,10 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from shared.domain.account import AccountType, KISAccount
+from shared.domain.account import AccountType, BrokerType, KISAccount
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 ENV_FILE = PROJECT_ROOT / ".env"
@@ -76,10 +76,21 @@ class Settings(BaseSettings):
     KIS_WS_AUTOSTART: bool = True
     KIS_WS_DEFAULT_CODES: str = "005930"
     KIS_WS_RECONNECT_MAX_SECONDS: int = 60
+
+    TOSS_API_BASE_URL: str = "https://openapi.tossinvest.com"
+    TOSS_CLIENT_ID: str = ""
+    TOSS_CLIENT_SECRET: SecretStr = SecretStr("")
+    TOSS_ACCOUNT_SEQ: int | None = None
+    TOSS_IS_MOCK: bool = True
+    TOSS_HTTP_TIMEOUT_SECONDS: int = 10
+    TOSS_SSL_VERIFY: bool = True
+    TOSS_CA_BUNDLE_PATH: Path | None = None
+
     MARKET_SNAPSHOT_AUTOSTART: bool = True
     MARKET_SNAPSHOT_ACCOUNT_TYPE: AccountType = AccountType.PAPER
     MARKET_SNAPSHOT_INTERVAL_MINUTES: int = 5
     MARKET_SNAPSHOT_REQUEST_CONCURRENCY: int = 8
+    MARKET_SNAPSHOT_REQUEST_INTERVAL_SECONDS: float = 0.35
     MARKET_SNAPSHOT_STALE_AFTER_MINUTES: int = 10
     MARKET_SESSION_PRE_MARKET_START: str = "08:00"
     MARKET_SESSION_PRE_MARKET_END: str = "08:50"
@@ -101,6 +112,10 @@ class Settings(BaseSettings):
     RISK_MANAGER_ACCOUNT_TYPE: AccountType = AccountType.PAPER
     RISK_MANAGER_STOP_LOSS_PCT: float = -10.0
     RISK_MANAGER_POSITION_REFRESH_SECONDS: int = 60
+    ALERT_MONITOR_AUTOSTART: bool = False
+    ALERT_MONITOR_INTERVAL_SECONDS: int = 60
+    ALERT_ORDER_IS_MOCK: bool = True
+    ALERT_DEFAULT_BROKER: BrokerType = BrokerType.KIS
 
     KRX_ID: str = ""
     KRX_PW: SecretStr = SecretStr("")
@@ -139,6 +154,13 @@ class Settings(BaseSettings):
     BROKER_ORDER_SYNC_ACCOUNTS: str = "PAPER,REAL,ISA"
     DEFAULT_STRATEGY_NAME: str = "value_v1"
 
+    @field_validator("TOSS_ACCOUNT_SEQ", mode="before")
+    @classmethod
+    def empty_toss_account_seq_to_none(cls, value: object) -> object:
+        if value == "":
+            return None
+        return value
+
     def resolve_path(self, path: Path) -> Path:
         if path.is_absolute():
             return path
@@ -167,6 +189,14 @@ class Settings(BaseSettings):
     @property
     def telegram_ca_bundle_path(self) -> Path | None:
         return self._optional_file_path(self.TELEGRAM_CA_BUNDLE_PATH)
+
+    @property
+    def toss_ca_bundle_path(self) -> Path | None:
+        return self._optional_file_path(self.TOSS_CA_BUNDLE_PATH)
+
+    @property
+    def toss_credentials_configured(self) -> bool:
+        return bool(self.TOSS_CLIENT_ID and self.TOSS_CLIENT_SECRET.get_secret_value())
 
     def _optional_file_path(self, value: Path | None) -> Path | None:
         if value is None:

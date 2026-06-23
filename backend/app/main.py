@@ -20,6 +20,7 @@ from backend.app.api.heatmap import router as heatmap_router
 from backend.app.api.portfolio import router as portfolio_router
 from backend.app.api.principles import router as principles_router
 from backend.app.api.quant import router as quant_router
+from backend.app.api.quotes import router as quotes_api_router
 from backend.app.api.settings import router as settings_router
 from backend.app.api.screener import router as screener_router
 from backend.app.api.stocks import router as stocks_router
@@ -27,6 +28,7 @@ from backend.app.api.system import automation_router, router as system_router
 from backend.app.api.trade_journal import router as trade_journal_router
 from backend.app.api.watchlist import router as watchlist_router
 from backend.app.core.config import settings
+from backend.app.services.alerts.monitor import AlertMonitorService
 from backend.app.services.batch.scheduler import start_batch_scheduler, stop_batch_scheduler
 from backend.app.schemas.portfolio import ApiEnvelope, ApiError
 from backend.app.services.kis.market_snapshot import (
@@ -54,6 +56,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     order_tracker: OrderTrackerService | None = None
     risk_manager: PortfolioRiskManager | None = None
     risk_subscription_task: asyncio.Task[None] | None = None
+    alert_monitor: AlertMonitorService | None = None
 
     if settings.RISK_MANAGER_AUTOSTART:
         risk_manager = PortfolioRiskManager()
@@ -117,10 +120,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         order_tracker.start()
         app.state.order_tracker = order_tracker
 
+    if settings.ALERT_MONITOR_AUTOSTART:
+        alert_monitor = AlertMonitorService()
+        alert_monitor.start()
+        app.state.alert_monitor = alert_monitor
+        logger.info(
+            "started alert monitor interval=%ss mock_orders=%s",
+            settings.ALERT_MONITOR_INTERVAL_SECONDS,
+            settings.ALERT_ORDER_IS_MOCK,
+        )
+
     try:
         yield
     finally:
         set_upstream_client(None)
+        if alert_monitor is not None:
+            await alert_monitor.stop()
         if order_tracker is not None:
             await order_tracker.stop()
         stop_market_snapshot_scheduler(market_snapshot_scheduler)
@@ -204,6 +219,7 @@ app.include_router(alerts_router)
 app.include_router(portfolio_router)
 app.include_router(principles_router)
 app.include_router(quant_router)
+app.include_router(quotes_api_router)
 app.include_router(settings_router)
 app.include_router(stocks_router)
 app.include_router(screener_router)

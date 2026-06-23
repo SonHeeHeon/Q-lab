@@ -15,6 +15,7 @@ import 'heatmap_controller.dart';
 import 'session_badge.dart';
 
 final _date = DateFormat('yyyy-MM-dd');
+final _time = DateFormat('HH:mm:ss');
 final _krw = NumberFormat('#,##0');
 
 class HeatmapScreen extends ConsumerWidget {
@@ -29,9 +30,10 @@ class HeatmapScreen extends ConsumerWidget {
         title: const Text('시장 히트맵'),
         actions: [
           IconButton(
-            tooltip: '새로고침',
+            tooltip: '새로고침 (강제 갱신)',
             icon: const Icon(Icons.refresh),
-            onPressed: () => ref.invalidate(heatmapDataProvider),
+            onPressed: () =>
+                ref.read(heatmapDataProvider.notifier).refresh(force: true),
           ),
         ],
       ),
@@ -136,25 +138,7 @@ class _Body extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-          child: Row(
-            children: [
-              Expanded(
-                child: Text(
-                  '${data.market} · ${data.groupBy} · '
-                  '${data.asOf == null ? "-" : _date.format(data.asOf!.toLocal())} · '
-                  '${stocks.length}종목'
-                  '${data.source != null ? " · ${data.source}" : ""}',
-                  style: theme.textTheme.bodySmall,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              const SizedBox(width: 8),
-              SessionBadge(response: data),
-            ],
-          ),
-        ),
+        _MetaBar(data: data, stockCount: stocks.length),
         Expanded(
           child: Padding(
             padding: const EdgeInsets.all(8),
@@ -175,6 +159,137 @@ class _Body extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// Meta header: separates 가격 기준일 (as_of) from 조회 시각 (served_at)
+/// and surfaces price_basis / source / warning as badges.
+class _MetaBar extends StatelessWidget {
+  const _MetaBar({required this.data, required this.stockCount});
+  final HeatmapResponse data;
+  final int stockCount;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '${data.market} · ${data.groupBy} · $stockCount종목',
+                  style: theme.textTheme.bodySmall,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: 8),
+              SessionBadge(response: data),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 6,
+            runSpacing: 4,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              _MetaChip(
+                icon: Icons.event_outlined,
+                label: '가격 기준일 '
+                    '${data.asOf == null ? "-" : _date.format(data.asOf!.toLocal())}',
+              ),
+              _MetaChip(
+                icon: Icons.schedule_outlined,
+                label: '조회 시각 '
+                    '${data.servedAt == null ? "-" : _time.format(data.servedAt!.toLocal())}',
+              ),
+              if (data.priceBasis != null)
+                _MetaChip(
+                  icon: Icons.price_change_outlined,
+                  label: _priceBasisLabel(data.priceBasis!),
+                ),
+              if (data.source != null)
+                _MetaChip(icon: Icons.dns_outlined, label: data.source!),
+            ],
+          ),
+          if (data.warning != null) ...[
+            const SizedBox(height: 6),
+            _WarningBadge(text: data.warning!),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+String _priceBasisLabel(String basis) {
+  switch (basis.toUpperCase()) {
+    case 'DB_CLOSE':
+      return '종가 기준';
+    case 'LIVE':
+    case 'SNAPSHOT':
+      return '실시간';
+    default:
+      return basis;
+  }
+}
+
+class _MetaChip extends StatelessWidget {
+  const _MetaChip({required this.icon, required this.label});
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 13, color: theme.colorScheme.outline),
+          const SizedBox(width: 4),
+          Text(label, style: theme.textTheme.labelSmall),
+        ],
+      ),
+    );
+  }
+}
+
+class _WarningBadge extends StatelessWidget {
+  const _WarningBadge({required this.text});
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final c = theme.colorScheme.error;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: c.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: c.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.warning_amber_rounded, size: 14, color: c),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(text,
+                style: theme.textTheme.labelSmall?.copyWith(color: c)),
+          ),
+        ],
+      ),
     );
   }
 }

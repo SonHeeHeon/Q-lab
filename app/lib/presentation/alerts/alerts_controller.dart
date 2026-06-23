@@ -13,9 +13,14 @@ enum AlertFilter { all, pending, triggered, cancelled }
 
 final alertFilterProvider = StateProvider<AlertFilter>((ref) => AlertFilter.all);
 
+final alertCalendarViewProvider = StateProvider<bool>((ref) => false);
+
 final allAlertsProvider = FutureProvider<List<Alert>>((ref) async {
-  // Invalidate when a new alert_triggered frame arrives over WS.
-  ref.listen(quotesProvider.notifier, (_, __) {});
+  // Re-fetch whenever WS fires an alert_triggered frame.
+  final notifier = ref.read(quotesProvider.notifier);
+  final sub = notifier.alertTriggeredStream.listen((_) => ref.invalidateSelf());
+  ref.onDispose(sub.cancel);
+
   final list = await ref.read(alertsApiProvider).list();
   // Sort: pending first (by created_at desc), then triggered (by triggered_at desc),
   // then cancelled

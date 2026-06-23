@@ -14,11 +14,19 @@ import '../../data/api/portfolio_api.dart';
 import '../../data/ws/quotes_ws_client.dart';
 import '../../domain/entities/account.dart';
 import '../../shared/widgets/sparkline.dart';
+import '../trade_journal/post_order_journal_dialog.dart';
 import 'portfolio_controller.dart';
 
 final _krw = NumberFormat('#,##0');
 
 enum _OrderType { market, limit }
+
+class _OrderResult {
+  _OrderResult({required this.receipt, required this.side, required this.qty});
+  final TradeReceipt receipt;
+  final OrderDirection side;
+  final int qty;
+}
 
 class _SparklinePreview extends StatelessWidget {
   const _SparklinePreview({required this.stockCode});
@@ -77,6 +85,8 @@ class OrderSheetArgs {
     required this.initialSide,
     this.holdingQuantity,
     this.avgBuyPrice,
+    this.initialMarketPrice,
+    this.broker = BrokerType.KIS,
   });
 
   final KisAccount account;
@@ -85,9 +95,15 @@ class OrderSheetArgs {
   final OrderDirection initialSide;
   final int? holdingQuantity;
   final double? avgBuyPrice;
+
+  /// Best-known *market* price at open time (live tick or last close).
+  /// Never the average buy price — that would mislead the order estimate.
+  /// Used only until a fresh WS tick/snapshot arrives.
+  final double? initialMarketPrice;
+  final BrokerType broker;
 }
 
-Future<void> showOrderSheet(BuildContext context, WidgetRef ref, OrderSheetArgs args) {
+Future<void> showOrderSheet(BuildContext context, WidgetRef ref, OrderSheetArgs args) async {
   // Make sure WS is subscribed so the live price ticks while the sheet
   // is open. Track whether this code was already subscribed by the
   // owning screen (Portfolio holdings auto-subscribe) — if so, we
@@ -97,22 +113,47 @@ Future<void> showOrderSheet(BuildContext context, WidgetRef ref, OrderSheetArgs 
   if (!alreadySubscribed) {
     quotes.subscribe([args.stockCode]);
   }
+  // Always pull a fresh snapshot on open — a steady subscription only
+  // pushes ticks on change, so an already-subscribed code may have a
+  // stale (or no) price in the cache.
+  quotes.requestSnapshot([args.stockCode], broker: args.broker.wire);
 
-  return showModalBottomSheet(
-    context: context,
-    isScrollControlled: true,
-    showDragHandle: true,
-    builder: (ctx) => Padding(
-      padding: EdgeInsets.only(
-        bottom: MediaQuery.of(ctx).viewInsets.bottom,
+  _OrderResult? result;
+  try {
+    result = await showModalBottomSheet<_OrderResult?>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) => Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(ctx).viewInsets.bottom,
+        ),
+        child: _OrderSheet(args: args),
       ),
-      child: _OrderSheet(args: args),
-    ),
-  ).whenComplete(() {
+    );
+  } finally {
     if (!alreadySubscribed) {
       quotes.unsubscribe([args.stockCode]);
     }
-  });
+  }
+
+  if (result == null || !context.mounted) return;
+
+  final snackMsg = '✅ 주문 전송: ${args.stockName} '
+      '${result.side == OrderDirection.buy ? '매수' : '매도'} ${result.qty}주'
+      '${result.receipt.tradeId != null ? ' (trade #${result.receipt.tradeId})' : ''}';
+  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(snackMsg)));
+
+  if (result.receipt.tradeId != null) {
+    await showPostOrderJournalDialog(
+      context, ref,
+      stockCode: args.stockCode,
+      stockName: args.stockName,
+      side: result.side,
+      qty: result.qty,
+      tradeId: result.receipt.tradeId!,
+    );
+  }
 }
 
 class _OrderSheet extends ConsumerStatefulWidget {
@@ -161,6 +202,7 @@ class _OrderSheetState extends ConsumerState<_OrderSheet> {
     try {
       final receipt = await ref.read(portfolioApiProvider).placeOrder(
             PlaceOrderRequest(
+              broker: widget.args.broker,
               accountType: widget.args.account,
               stockCode: widget.args.stockCode,
               direction: _side,
@@ -170,16 +212,7 @@ class _OrderSheetState extends ConsumerState<_OrderSheet> {
           );
       if (!mounted) return;
       ref.invalidate(accountDetailProvider);
-      Navigator.of(context).pop();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            '✅ 주문 전송: ${widget.args.stockName} '
-            '${_side == OrderDirection.buy ? '매수' : '매도'} ${qty}주'
-            '${receipt.tradeId != null ? ' (trade #${receipt.tradeId})' : ''}',
-          ),
-        ),
-      );
+      Navigator.of(context).pop(_OrderResult(receipt: receipt, side: _side, qty: qty));
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = '$e');
@@ -192,7 +225,9 @@ class _OrderSheetState extends ConsumerState<_OrderSheet> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final tick = ref.watch(quotesProvider.select((m) => m[widget.args.stockCode]));
-    final livePrice = tick?.price ?? widget.args.avgBuyPrice;
+    // Market price only — never the average buy price. Falls back to the
+    // open-time market price until a fresh tick/snapshot arrives.
+    final livePrice = tick?.price ?? widget.args.initialMarketPrice;
     final est = _type == _OrderType.market
         ? (livePrice == null ? null : livePrice * _qty)
         : (_price == null ? null : _price! * _qty);
@@ -218,6 +253,21 @@ class _OrderSheetState extends ConsumerState<_OrderSheet> {
                       fontWeight: FontWeight.w700,
                     )),
               ),
+              if (widget.args.broker == BrokerType.TOSS) ...[
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF3182F6).withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text('토스증권',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: const Color(0xFF3182F6),
+                        fontWeight: FontWeight.w700,
+                      )),
+                ),
+              ],
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
@@ -230,9 +280,14 @@ class _OrderSheetState extends ConsumerState<_OrderSheet> {
           const SizedBox(height: 4),
           Row(
             children: [
-              if (livePrice != null)
-                Text('현재가  ₩${_krw.format(livePrice)}',
-                    style: theme.textTheme.bodyMedium),
+              Text(
+                livePrice != null
+                    ? '현재가  ₩${_krw.format(livePrice)}'
+                    : '현재가 확인 중…',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: livePrice == null ? theme.colorScheme.outline : null,
+                ),
+              ),
               const SizedBox(width: 12),
               if (widget.args.holdingQuantity != null)
                 Text('보유 ${widget.args.holdingQuantity}주',
@@ -366,7 +421,7 @@ class _OrderSheetState extends ConsumerState<_OrderSheet> {
                 Text('예상 체결대금', style: theme.textTheme.bodyMedium),
                 const Spacer(),
                 Text(
-                  est == null ? '계산 불가' : '₩${_krw.format(est)}',
+                  est == null ? '--' : '₩${_krw.format(est)}',
                   style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
                 ),
               ],

@@ -131,8 +131,27 @@ class Alert(ServiceBase):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     stock_code: Mapped[str] = mapped_column(Text, nullable=False)
+    broker: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'KIS'")
+    )
+    market_country: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'KR'")
+    )
+    symbol: Mapped[str | None] = mapped_column(Text)
     condition: Mapped[str] = mapped_column(Text, nullable=False)
     threshold: Mapped[float] = mapped_column(Float, nullable=False)
+    action: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'NOTIFY'")
+    )
+    order_quantity: Mapped[int | None] = mapped_column(Integer)
+    account_type: Mapped[str | None] = mapped_column(Text)
+    account_id: Mapped[str | None] = mapped_column(Text)
+    is_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("1")
+    )
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_price: Mapped[float | None] = mapped_column(Float)
+    last_error: Mapped[str | None] = mapped_column(Text)
     triggered_at: Mapped[datetime | None] = mapped_column(DateTime)
     post_mortem: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(

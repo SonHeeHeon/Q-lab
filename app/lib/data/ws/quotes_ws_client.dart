@@ -93,6 +93,18 @@ class QuotesNotifier extends Notifier<Map<String, Tick>> {
   /// on subscriptions owned by long-lived screens.
   bool isSubscribed(String code) => _subscribed.contains(code);
 
+  /// Requests a one-shot price snapshot for [codes] without touching the
+  /// subscription set. The order sheet calls this on open so it gets a
+  /// fresh current price immediately — even when the code is already
+  /// subscribed (a steady subscription only pushes ticks on change).
+  ///
+  ///   { "action": "snapshot", "broker": "KIS", "codes": ["005930"] }
+  void requestSnapshot(Iterable<String> codes, {String broker = 'KIS'}) {
+    final list = codes.toList();
+    if (list.isEmpty) return;
+    _send({'action': 'snapshot', 'broker': broker, 'codes': list});
+  }
+
   // -- internals --------------------------------------------------------------
 
   void _connect() {

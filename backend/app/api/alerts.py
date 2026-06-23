@@ -12,9 +12,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.schemas.portfolio import ApiEnvelope
+from backend.app.services.alerts.monitor import (
+    alert_monitor_settings_payload,
+    evaluate_alerts_once,
+)
 from backend.app.services.market_data.names import lookup_stock_names
 from shared.db.models import Alert
 from shared.db.session import get_service_session
+from shared.domain.account import AccountType, BrokerType
 
 router = APIRouter(prefix="/api/alerts", tags=["alerts"])
 
@@ -25,16 +30,32 @@ AlertConditionWire = Literal[
     "VOLUME_SPIKE",
 ]
 
+AlertActionWire = Literal["NOTIFY", "BUY", "SELL"]
+MarketCountryWire = Literal["KR", "US"]
+
 
 class AlertCreate(BaseModel):
-    stock_code: str = Field(min_length=1, max_length=12)
+    stock_code: str = Field(min_length=1, max_length=20)
+    broker: BrokerType = BrokerType.KIS
+    market_country: MarketCountryWire | None = None
+    symbol: str | None = Field(default=None, min_length=1, max_length=20)
     condition: AlertConditionWire
     threshold: float
+    action: AlertActionWire = "NOTIFY"
+    order_quantity: int | None = Field(default=None, gt=0)
+    account_type: AccountType = AccountType.PAPER
+    account_id: str | None = None
+    is_enabled: bool = True
 
     @field_validator("stock_code")
     @classmethod
     def normalize_stock_code(cls, value: str) -> str:
-        return value.strip().zfill(6)
+        return _normalize_symbol(value)
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_symbol(cls, value: str | None) -> str | None:
+        return _normalize_symbol(value) if value else None
 
 
 class AlertPostMortemPatch(BaseModel):
@@ -53,8 +74,19 @@ class AlertResponse(BaseModel):
     id: int
     stock_code: str
     stock_name: str
+    broker: BrokerType = BrokerType.KIS
+    market_country: str
+    symbol: str
     condition: str
     threshold: float
+    action: str
+    order_quantity: int | None
+    account_type: str | None
+    account_id: str | None
+    is_enabled: bool
+    last_checked_at: datetime | None
+    last_price: float | None
+    last_error: str | None
     status: Literal["pending", "triggered", "cancelled"]
     created_at: datetime
     triggered_at: datetime | None
@@ -87,15 +119,41 @@ async def create_alert(
     payload: AlertCreate,
     session: AsyncSession = Depends(get_service_session),
 ) -> ApiEnvelope[AlertResponse]:
+    symbol = payload.symbol or payload.stock_code
+    market_country = payload.market_country or ("KR" if symbol.isdigit() else "US")
+    broker = payload.broker
+    if market_country == "US" and broker is BrokerType.KIS:
+        broker = BrokerType.TOSS
     alert = Alert(
         stock_code=payload.stock_code,
+        broker=broker.value,
+        market_country=market_country,
+        symbol=symbol,
         condition=payload.condition,
         threshold=payload.threshold,
+        action=payload.action,
+        order_quantity=payload.order_quantity,
+        account_type=payload.account_type.value,
+        account_id=payload.account_id,
+        is_enabled=payload.is_enabled,
     )
     session.add(alert)
     await session.commit()
     await session.refresh(alert)
     return ApiEnvelope(data=(await _alert_responses([alert]))[0], error=None)
+
+
+@router.post("/evaluate", response_model=ApiEnvelope[dict[str, Any]])
+async def evaluate_alerts() -> ApiEnvelope[dict[str, Any]]:
+    """Evaluate pending alerts once without waiting for the background loop."""
+
+    summary = await evaluate_alerts_once()
+    return ApiEnvelope(data=summary.to_dict(), error=None)
+
+
+@router.get("/monitor", response_model=ApiEnvelope[dict[str, Any]])
+async def get_alert_monitor_settings() -> ApiEnvelope[dict[str, Any]]:
+    return ApiEnvelope(data=alert_monitor_settings_payload(), error=None)
 
 
 @router.delete("/{alert_id}", response_model=ApiEnvelope[dict[str, Any]])
@@ -130,17 +188,33 @@ async def patch_alert_post_mortem(
 
 
 async def _alert_responses(alerts: list[Alert]) -> list[AlertResponse]:
+    domestic_codes = [
+        _alert_symbol(alert)
+        for alert in alerts
+        if _alert_market_country(alert) == "KR" and _alert_symbol(alert).isdigit()
+    ]
     names = await asyncio.to_thread(
         lookup_stock_names,
-        [alert.stock_code for alert in alerts],
+        domestic_codes,
     )
     return [
         AlertResponse(
             id=alert.id,
             stock_code=alert.stock_code,
-            stock_name=names.get(alert.stock_code) or alert.stock_code,
+            stock_name=names.get(_alert_symbol(alert)) or _alert_symbol(alert),
+            broker=_alert_broker(alert),
+            market_country=_alert_market_country(alert),
+            symbol=_alert_symbol(alert),
             condition=_to_flutter_condition(alert.condition),
             threshold=alert.threshold,
+            action=str(alert.action or "NOTIFY").upper(),
+            order_quantity=alert.order_quantity,
+            account_type=alert.account_type,
+            account_id=alert.account_id,
+            is_enabled=bool(alert.is_enabled),
+            last_checked_at=alert.last_checked_at,
+            last_price=alert.last_price,
+            last_error=alert.last_error,
             status="triggered" if alert.triggered_at is not None else "pending",
             created_at=alert.created_at,
             triggered_at=alert.triggered_at,
@@ -158,3 +232,27 @@ def _to_flutter_condition(condition: str) -> str:
         "PCT_RISE": "PCT_CHANGE",
     }
     return mapping.get(condition.upper(), condition.upper())
+
+
+def _normalize_symbol(value: str) -> str:
+    stripped = value.strip().upper()
+    return stripped.zfill(6) if stripped.isdigit() else stripped
+
+
+def _alert_symbol(alert: Alert) -> str:
+    value = str(alert.symbol or alert.stock_code or "").strip().upper()
+    return value.zfill(6) if value.isdigit() else value
+
+
+def _alert_market_country(alert: Alert) -> str:
+    value = str(alert.market_country or "").upper().strip()
+    if value in {"KR", "US"}:
+        return value
+    return "KR" if _alert_symbol(alert).isdigit() else "US"
+
+
+def _alert_broker(alert: Alert) -> BrokerType:
+    try:
+        return BrokerType(str(alert.broker or "KIS").upper())
+    except ValueError:
+        return BrokerType.KIS
