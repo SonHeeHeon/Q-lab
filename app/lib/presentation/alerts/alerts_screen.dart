@@ -11,6 +11,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
 import '../../data/api/alerts_api.dart';
+import '../../data/api/portfolio_api.dart' show BrokerType;
+import '../../domain/entities/account.dart';
 import '../../domain/entities/alert.dart';
 import '../../shared/widgets/empty_state.dart';
 import 'alerts_controller.dart';
@@ -31,7 +33,7 @@ class AlertsScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('알림 이력'),
+        title: const Text('알림 · 자동매매'),
         actions: [
           IconButton(
             tooltip: isCalendar ? '목록 보기' : '캘린더 보기',
@@ -48,7 +50,7 @@ class AlertsScreen extends ConsumerWidget {
       ),
       floatingActionButton: FloatingActionButton.extended(
         icon: const Icon(Icons.add_alert_outlined),
-        label: const Text('알림 추가'),
+        label: const Text('알림 · 주문 추가'),
         onPressed: () => _showCreateDialog(context, ref),
       ),
       body: async.when(
@@ -442,19 +444,28 @@ class _AlertRow extends ConsumerWidget {
         backgroundColor: color.withValues(alpha: 0.15),
         child: Icon(icon, color: color),
       ),
-      title: Row(
+      title: Wrap(
+        crossAxisAlignment: WrapCrossAlignment.center,
+        spacing: 6,
+        runSpacing: 4,
         children: [
-          Text('${alert.stockName}  ·  ${alert.stockCode}',
+          Text('${alert.stockName}  ·  ${alert.symbol}',
               style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
-          const SizedBox(width: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-            decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Text(label, style: TextStyle(color: color, fontSize: 11)),
+          _MiniBadge(
+            text: alert.isUsMarket ? '🇺🇸 ${alert.broker}' : '🇰🇷 ${alert.broker}',
+            color: alert.broker.toUpperCase() == 'TOSS'
+                ? const Color(0xFF3182F6)
+                : Colors.purple,
           ),
+          if (alert.action.isOrder)
+            _MiniBadge(
+              text: '${alert.action.label}'
+                  '${alert.orderQuantity != null ? ' ${alert.orderQuantity}주' : ''}',
+              color: alert.action == AlertAction.buy
+                  ? Colors.redAccent
+                  : Colors.blueAccent,
+            ),
+          _MiniBadge(text: label, color: color),
         ],
       ),
       subtitle: Padding(
@@ -491,6 +502,24 @@ class _AlertRow extends ConsumerWidget {
             const PopupMenuItem(value: 'post', child: Text('사후 코멘트')),
         ],
       ),
+    );
+  }
+}
+
+class _MiniBadge extends StatelessWidget {
+  const _MiniBadge({required this.text, required this.color});
+  final String text;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(text, style: TextStyle(color: color, fontSize: 11)),
     );
   }
 }
@@ -550,61 +579,213 @@ Future<void> _editPostMortemDialog(BuildContext context, WidgetRef ref, Alert a)
   }
 }
 
+/// Infers market from the symbol shape: all-digits → KR (국장),
+/// anything with letters → US (나스닥/뉴욕). Empty keeps the current value.
+String _inferCountry(String s, String current) {
+  if (s.isEmpty) return current;
+  if (RegExp(r'^[0-9]+$').hasMatch(s)) return 'KR';
+  if (RegExp(r'[A-Za-z]').hasMatch(s)) return 'US';
+  return current;
+}
+
 Future<void> _showCreateDialog(BuildContext context, WidgetRef ref) async {
-  final codeCtrl = TextEditingController();
+  // Pre-load the monitor config so we can warn about mock-order mode.
+  bool orderIsMock = true;
+  try {
+    orderIsMock = (await ref.read(alertMonitorProvider.future)).orderIsMock;
+  } catch (_) {
+    // Monitor endpoint unreachable — assume mock to stay on the safe side.
+  }
+  if (!context.mounted) return;
+
+  final symbolCtrl = TextEditingController();
   final thresholdCtrl = TextEditingController();
+  final qtyCtrl = TextEditingController();
+  final accountIdCtrl = TextEditingController();
   AlertCondition cond = AlertCondition.priceAbove;
+  String country = 'KR';
+  bool manualMarket = false;
+  AlertAction action = AlertAction.notify;
+  KisAccount accountType = KisAccount.paper;
 
   final ok = await showDialog<bool>(
     context: context,
     builder: (ctx) => StatefulBuilder(
-      builder: (ctx, setState) => AlertDialog(
-        title: const Text('알림 추가'),
-        content: SizedBox(
-          width: 360,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: codeCtrl,
-                decoration: const InputDecoration(labelText: '종목 코드'),
-              ),
-              const SizedBox(height: 12),
-              DropdownButtonFormField<AlertCondition>(
-                initialValue: cond,
-                decoration: const InputDecoration(labelText: '조건'),
-                items: [
-                  for (final c in AlertCondition.values)
-                    DropdownMenuItem(value: c, child: Text(c.label)),
+      builder: (ctx, setState) {
+        final theme = Theme.of(ctx);
+        final symbol = symbolCtrl.text.trim();
+        final isUs = country == 'US';
+        final qty = int.tryParse(qtyCtrl.text.trim());
+        final threshold = double.tryParse(thresholdCtrl.text.trim());
+        final canCreate = symbol.isNotEmpty &&
+            threshold != null &&
+            (!action.isOrder || (qty != null && qty > 0));
+
+        return AlertDialog(
+          title: const Text('알림 · 조건부 주문 추가'),
+          content: SizedBox(
+            width: 380,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // Market / broker
+                  SegmentedButton<String>(
+                    segments: const [
+                      ButtonSegment(value: 'KR', label: Text('🇰🇷 국장 · KIS')),
+                      ButtonSegment(value: 'US', label: Text('🇺🇸 미국 · Toss')),
+                    ],
+                    selected: {country},
+                    onSelectionChanged: (s) => setState(() {
+                      country = s.first;
+                      manualMarket = true;
+                    }),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: symbolCtrl,
+                    textCapitalization: TextCapitalization.characters,
+                    decoration: InputDecoration(
+                      labelText: isUs ? '티커 (예: AAPL, NVDA)' : '종목코드 (6자리)',
+                      helperText: isUs
+                          ? '미국 종목은 종목번호가 아닌 티커로 입력'
+                          : '국장 6자리 숫자 코드',
+                    ),
+                    onChanged: (v) => setState(() {
+                      if (!manualMarket) {
+                        country = _inferCountry(v.trim(), country);
+                      }
+                    }),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<AlertCondition>(
+                    initialValue: cond,
+                    decoration: const InputDecoration(labelText: '조건'),
+                    items: [
+                      for (final c in AlertCondition.values)
+                        DropdownMenuItem(value: c, child: Text(c.label)),
+                    ],
+                    onChanged: (v) => setState(() => cond = v ?? cond),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: thresholdCtrl,
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(labelText: '임계값'),
+                    onChanged: (_) => setState(() {}),
+                  ),
+                  const SizedBox(height: 16),
+                  // Action: NOTIFY / BUY / SELL
+                  SegmentedButton<AlertAction>(
+                    segments: const [
+                      ButtonSegment(value: AlertAction.notify, label: Text('알림')),
+                      ButtonSegment(value: AlertAction.buy, label: Text('매수')),
+                      ButtonSegment(value: AlertAction.sell, label: Text('매도')),
+                    ],
+                    selected: {action},
+                    onSelectionChanged: (s) => setState(() => action = s.first),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    action == AlertAction.notify
+                        ? '🔔 조건 충족 시 알림만 보냅니다 (텔레그램/푸시).'
+                        : '⚡ 조건 발동 시 ${action.label} 주문이 자동 생성됩니다.',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                  if (action.isOrder && orderIsMock) ...[
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.withValues(alpha: 0.18),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        '⚠️ 모의(Mock) 주문 모드 — 실제 체결되지 않습니다.',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: Colors.amber.shade900,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                  if (action.isOrder) ...[
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: qtyCtrl,
+                      keyboardType: TextInputType.number,
+                      decoration: InputDecoration(
+                        labelText: '주문 수량 (주) *필수',
+                        errorText: (qty == null || qty <= 0)
+                            ? '1 이상 수량을 입력하세요'
+                            : null,
+                      ),
+                      onChanged: (_) => setState(() {}),
+                    ),
+                    const SizedBox(height: 12),
+                    if (isUs)
+                      TextField(
+                        controller: accountIdCtrl,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          labelText: '토스 계좌 seq (선택)',
+                          helperText: '미입력 시 기본 계좌 사용',
+                        ),
+                      )
+                    else
+                      DropdownButtonFormField<KisAccount>(
+                        initialValue: accountType,
+                        decoration: const InputDecoration(labelText: 'KIS 계좌'),
+                        items: [
+                          for (final a in KisAccount.values)
+                            DropdownMenuItem(
+                                value: a,
+                                child: Text('${a.label} (${a.wire})')),
+                        ],
+                        onChanged: (v) =>
+                            setState(() => accountType = v ?? accountType),
+                      ),
+                  ],
                 ],
-                onChanged: (v) => setState(() => cond = v ?? cond),
               ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: thresholdCtrl,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(labelText: '임계값'),
-              ),
-            ],
+            ),
           ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('취소')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('생성')),
-        ],
-      ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('취소')),
+            FilledButton(
+              onPressed: canCreate ? () => Navigator.pop(ctx, true) : null,
+              child: Text(action == AlertAction.notify ? '알림 생성' : '조건부 주문 생성'),
+            ),
+          ],
+        );
+      },
     ),
   );
   if (ok != true) return;
-  final code = codeCtrl.text.trim();
+
+  final symbol = symbolCtrl.text.trim();
   final threshold = double.tryParse(thresholdCtrl.text.trim());
-  if (code.isEmpty || threshold == null) return;
+  final qty = int.tryParse(qtyCtrl.text.trim());
+  if (symbol.isEmpty || threshold == null) return;
+  if (action.isOrder && (qty == null || qty <= 0)) return;
+
   try {
     await ref.read(alertsApiProvider).create(
-      stockCode: code,
-      condition: cond,
-      threshold: threshold,
-    );
+          symbol: symbol,
+          condition: cond,
+          threshold: threshold,
+          broker: country == 'US' ? BrokerType.TOSS : BrokerType.KIS,
+          marketCountry: country,
+          action: action,
+          orderQuantity: action.isOrder ? qty : null,
+          accountType: accountType,
+          accountId: country == 'US' ? accountIdCtrl.text.trim() : null,
+        );
     ref.invalidate(allAlertsProvider);
   } catch (e) {
     if (context.mounted) {

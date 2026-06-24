@@ -1,0 +1,262 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1782314374664,
+  "projectRoot": "/Users/honey/Dev/StockCollect_Project",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Python",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "pyproject.toml"
+        ]
+      }
+    ],
+    "frameworks": [
+      {
+        "name": "fastapi",
+        "version": null,
+        "category": "backend"
+      },
+      {
+        "name": "pytest",
+        "version": null,
+        "category": "testing"
+      }
+    ],
+    "packageManager": null,
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": "pytest",
+    "lintCommand": "ruff check",
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "app",
+      "docs"
+    ],
+    "gitBranches": {
+      "defaultBranch": "main",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "app": {
+      "path": "app",
+      "purpose": "Application code",
+      "fileCount": 8,
+      "lastAccessed": 1782314374655,
+      "keyFiles": [
+        "README.md",
+        "analysis_options.yaml",
+        "pubspec.lock",
+        "pubspec.yaml",
+        "qlab.iml"
+      ]
+    },
+    "backend": {
+      "path": "backend",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1782314374655,
+      "keyFiles": [
+        "__init__.py"
+      ]
+    },
+    "data": {
+      "path": "data",
+      "purpose": "Data files",
+      "fileCount": 7,
+      "lastAccessed": 1782314374655,
+      "keyFiles": [
+        "research.db",
+        "research.db-shm",
+        "research.db-wal",
+        "service.db",
+        "service.db-shm"
+      ]
+    },
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 1,
+      "lastAccessed": 1782314374656,
+      "keyFiles": [
+        "toss_openapi.json"
+      ]
+    },
+    "logs": {
+      "path": "logs",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1782314374656,
+      "keyFiles": []
+    },
+    "research": {
+      "path": "research",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1782314374656,
+      "keyFiles": [
+        "__init__.py"
+      ]
+    },
+    "shared": {
+      "path": "shared",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1782314374656,
+      "keyFiles": [
+        "__init__.py"
+      ]
+    },
+    "app/build": {
+      "path": "app/build",
+      "purpose": "Build output",
+      "fileCount": 3,
+      "lastAccessed": 1782314374657,
+      "keyFiles": [
+        "158a566568026b20889a4477a9ebc1b1.cache.dill.track.dill",
+        "9f49ecafdd9cd2c5c1abdbf61da7faa2.cache.dill.track.dill",
+        "e526d636a6238c5a01b25d33d78dd941.cache.dill.track.dill"
+      ]
+    },
+    "backend/app": {
+      "path": "backend/app",
+      "purpose": "Application code",
+      "fileCount": 2,
+      "lastAccessed": 1782314374657,
+      "keyFiles": [
+        "__init__.py",
+        "main.py"
+      ]
+    },
+    "backend/scripts": {
+      "path": "backend/scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 4,
+      "lastAccessed": 1782314374657,
+      "keyFiles": [
+        "run_daily_batch.py",
+        "run_jupyter.sh",
+        "verify_kis_tokens.py"
+      ]
+    },
+    "backend/tests": {
+      "path": "backend/tests",
+      "purpose": "Test files",
+      "fileCount": 10,
+      "lastAccessed": 1782314374657,
+      "keyFiles": [
+        "__init__.py",
+        "conftest.py",
+        "test_api_portfolio.py"
+      ]
+    },
+    "research/scripts": {
+      "path": "research/scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 5,
+      "lastAccessed": 1782314374657,
+      "keyFiles": [
+        "__init__.py",
+        "download_universe.py",
+        "download_us_universe.py"
+      ]
+    },
+    "shared/utils": {
+      "path": "shared/utils",
+      "purpose": "Utility functions",
+      "fileCount": 4,
+      "lastAccessed": 1782314374657,
+      "keyFiles": [
+        "__init__.py",
+        "config.py",
+        "logger.py"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "app/lib/presentation/portfolio/order_sheet.dart",
+      "accessCount": 10,
+      "lastAccessed": 1782314733491,
+      "type": "file"
+    },
+    {
+      "path": "app/lib/presentation/alerts/alerts_screen.dart",
+      "accessCount": 7,
+      "lastAccessed": 1782314978044,
+      "type": "file"
+    },
+    {
+      "path": "app/lib/domain/entities/alert.dart",
+      "accessCount": 4,
+      "lastAccessed": 1782314813469,
+      "type": "file"
+    },
+    {
+      "path": "app/lib/data/api/portfolio_api.dart",
+      "accessCount": 2,
+      "lastAccessed": 1782314670080,
+      "type": "file"
+    },
+    {
+      "path": "app/lib/presentation/portfolio/portfolio_screen.dart",
+      "accessCount": 2,
+      "lastAccessed": 1782314775860,
+      "type": "file"
+    },
+    {
+      "path": "app/lib/data/api/alerts_api.dart",
+      "accessCount": 2,
+      "lastAccessed": 1782314844025,
+      "type": "file"
+    },
+    {
+      "path": "app/lib/presentation/alerts/alerts_controller.dart",
+      "accessCount": 2,
+      "lastAccessed": 1782314852823,
+      "type": "file"
+    },
+    {
+      "path": "app/lib/core/routes.dart",
+      "accessCount": 2,
+      "lastAccessed": 1782314989174,
+      "type": "file"
+    },
+    {
+      "path": "backend/app/api/alerts.py",
+      "accessCount": 1,
+      "lastAccessed": 1782314525549,
+      "type": "file"
+    },
+    {
+      "path": "app/lib/domain/entities/account.dart",
+      "accessCount": 1,
+      "lastAccessed": 1782314614424,
+      "type": "file"
+    },
+    {
+      "path": "app/test/order_alert_payload_test.dart",
+      "accessCount": 1,
+      "lastAccessed": 1782315062658,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

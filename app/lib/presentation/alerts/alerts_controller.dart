@@ -15,6 +15,12 @@ final alertFilterProvider = StateProvider<AlertFilter>((ref) => AlertFilter.all)
 
 final alertCalendarViewProvider = StateProvider<bool>((ref) => false);
 
+/// Alert monitor / auto-order runtime config (mock flag, interval, broker).
+/// Used by the create form to warn when BUY/SELL orders run in mock mode.
+final alertMonitorProvider = FutureProvider<AlertMonitorSettings>((ref) async {
+  return ref.read(alertsApiProvider).monitor();
+});
+
 final allAlertsProvider = FutureProvider<List<Alert>>((ref) async {
   // Re-fetch whenever WS fires an alert_triggered frame.
   final notifier = ref.read(quotesProvider.notifier);

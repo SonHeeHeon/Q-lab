@@ -243,6 +243,7 @@ class PlaceOrderRequest {
     required this.quantity,
     this.price,
     this.broker = BrokerType.KIS,
+    this.accountId,
   }) : orderType = price == null ? 'MARKET' : 'LIMIT';
 
   final KisAccount accountType;
@@ -250,6 +251,11 @@ class PlaceOrderRequest {
   final OrderDirection direction;
   final int quantity;
   final BrokerType broker;
+
+  /// Toss account sequence (`account_seq`). Sent as `account_id` so the
+  /// backend can route a Toss order to the right brokerage account.
+  /// Null for KIS orders (account is keyed by `account_type`).
+  final String? accountId;
 
   /// null = 시장가(MARKET); 값 지정 시 지정가(LIMIT)
   final double? price;
@@ -263,6 +269,7 @@ class PlaceOrderRequest {
         'quantity': quantity,
         'order_type': orderType,
         if (price != null) 'price': price,
+        if (accountId != null) 'account_id': accountId,
       };
 }
 

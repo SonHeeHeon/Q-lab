@@ -46,7 +46,7 @@ const navDestinations = <NavDestination>[
   NavDestination(path: '/portfolio', label: '포트폴리오', icon: Icons.account_balance_wallet_outlined),
   NavDestination(path: '/watchlist', label: '관심종목', icon: Icons.star_border),
   NavDestination(path: '/trade-journal', label: '매매일지', icon: Icons.menu_book_outlined),
-  NavDestination(path: '/alerts', label: '알림', icon: Icons.notifications_outlined),
+  NavDestination(path: '/alerts', label: '알림·자동매매', icon: Icons.notifications_active_outlined),
   NavDestination(path: '/heatmap', label: '히트맵', icon: Icons.grid_view_outlined),
   NavDestination(path: '/quant', label: '퀀트', icon: Icons.analytics_outlined),
   NavDestination(path: '/principles', label: '투자원칙', icon: Icons.lightbulb_outline),

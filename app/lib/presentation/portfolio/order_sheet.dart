@@ -14,6 +14,7 @@ import '../../data/api/portfolio_api.dart';
 import '../../data/ws/quotes_ws_client.dart';
 import '../../domain/entities/account.dart';
 import '../../shared/widgets/sparkline.dart';
+import '../settings/settings_controller.dart';
 import '../trade_journal/post_order_journal_dialog.dart';
 import 'portfolio_controller.dart';
 
@@ -87,6 +88,7 @@ class OrderSheetArgs {
     this.avgBuyPrice,
     this.initialMarketPrice,
     this.broker = BrokerType.KIS,
+    this.accountId,
   });
 
   final KisAccount account;
@@ -101,6 +103,10 @@ class OrderSheetArgs {
   /// Used only until a fresh WS tick/snapshot arrives.
   final double? initialMarketPrice;
   final BrokerType broker;
+
+  /// Toss account sequence (`account_seq`), forwarded as `account_id` to
+  /// the order endpoint. Null for KIS holdings.
+  final String? accountId;
 }
 
 Future<void> showOrderSheet(BuildContext context, WidgetRef ref, OrderSheetArgs args) async {
@@ -204,6 +210,7 @@ class _OrderSheetState extends ConsumerState<_OrderSheet> {
             PlaceOrderRequest(
               broker: widget.args.broker,
               accountType: widget.args.account,
+              accountId: widget.args.accountId,
               stockCode: widget.args.stockCode,
               direction: _side,
               quantity: qty,
@@ -228,6 +235,10 @@ class _OrderSheetState extends ConsumerState<_OrderSheet> {
     // Market price only — never the average buy price. Falls back to the
     // open-time market price until a fresh tick/snapshot arrives.
     final livePrice = tick?.price ?? widget.args.initialMarketPrice;
+    // Toss mock-order mode (from settings) — surfaced as a badge so a
+    // simulated order is never mistaken for a real fill.
+    final tossIsMock = widget.args.broker == BrokerType.TOSS &&
+        (ref.watch(appSettingsProvider).valueOrNull?.toss?.isMock ?? false);
     final est = _type == _OrderType.market
         ? (livePrice == null ? null : livePrice * _qty)
         : (_price == null ? null : _price! * _qty);
@@ -267,6 +278,21 @@ class _OrderSheetState extends ConsumerState<_OrderSheet> {
                         fontWeight: FontWeight.w700,
                       )),
                 ),
+                if (tossIsMock) ...[
+                  const SizedBox(width: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.amber.withValues(alpha: 0.20),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text('모의(Mock)',
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: Colors.amber.shade800,
+                          fontWeight: FontWeight.w700,
+                        )),
+                  ),
+                ],
               ],
               const SizedBox(width: 8),
               Expanded(

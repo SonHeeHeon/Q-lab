@@ -353,66 +353,85 @@ class _UnifiedPositionRow extends ConsumerWidget {
     final isUp = pl >= 0;
     final plColor = isUp ? Colors.redAccent : Colors.blueAccent;
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      child: Row(
-        children: [
-          Expanded(
-            flex: 4,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    _BrokerBadge(broker: p.broker),
-                    const SizedBox(width: 6),
-                    Flexible(
-                      child: Text(p.stockName,
-                          style: theme.textTheme.titleSmall
-                              ?.copyWith(fontWeight: FontWeight.w700)),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 2),
-                Text('${p.stockCode}  ·  ${_qty.format(p.quantity)}주',
-                    style: theme.textTheme.bodySmall),
-              ],
-            ),
-          ),
-          Expanded(
-            flex: 3,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Text(_krw.format(livePrice),
-                    style: theme.textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w600,
-                      color: liveTick == null ? null : plColor,
-                    )),
-                Text('평단 ${_krw.format(p.avgBuyPrice)}',
-                    style: theme.textTheme.bodySmall),
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            flex: 3,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Text(
-                  '${isUp ? '+' : ''}${_krw.format(pl)}',
-                  style: theme.textTheme.titleSmall?.copyWith(
-                    color: plColor,
-                    fontWeight: FontWeight.w700,
+    return InkWell(
+      // Open the order sheet routed to *this position's* broker + account
+      // so a Toss holding never gets sent through the KIS order path.
+      onTap: () => showOrderSheet(
+        context,
+        ref,
+        OrderSheetArgs(
+          account: p.accountType ?? KisAccount.paper,
+          broker: p.broker,
+          accountId: p.accountId,
+          stockCode: p.stockCode,
+          stockName: p.stockName,
+          initialSide: OrderDirection.buy,
+          holdingQuantity: p.quantity,
+          avgBuyPrice: p.avgBuyPrice,
+          initialMarketPrice: liveTick?.price ?? p.currentPrice,
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Row(
+          children: [
+            Expanded(
+              flex: 4,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      _BrokerBadge(broker: p.broker),
+                      const SizedBox(width: 6),
+                      Flexible(
+                        child: Text(p.stockName,
+                            style: theme.textTheme.titleSmall
+                                ?.copyWith(fontWeight: FontWeight.w700)),
+                      ),
+                    ],
                   ),
-                ),
-                Text('${_pct.format(plPct)}%',
-                    style: theme.textTheme.bodySmall?.copyWith(color: plColor)),
-              ],
+                  const SizedBox(height: 2),
+                  Text('${p.stockCode}  ·  ${_qty.format(p.quantity)}주',
+                      style: theme.textTheme.bodySmall),
+                ],
+              ),
             ),
-          ),
-        ],
+            Expanded(
+              flex: 3,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(_krw.format(livePrice),
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: liveTick == null ? null : plColor,
+                      )),
+                  Text('평단 ${_krw.format(p.avgBuyPrice)}',
+                      style: theme.textTheme.bodySmall),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              flex: 3,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    '${isUp ? '+' : ''}${_krw.format(pl)}',
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      color: plColor,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  Text('${_pct.format(plPct)}%',
+                      style: theme.textTheme.bodySmall?.copyWith(color: plColor)),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
