@@ -42,6 +42,8 @@ class UnifiedAccountSummary {
     required this.cashBalance,
     required this.totalPl,
     required this.totalPlPct,
+    this.cashKrw,
+    this.cashUsd,
   });
 
   final BrokerType broker;
@@ -52,6 +54,13 @@ class UnifiedAccountSummary {
   final double cashBalance;
   final double totalPl;
   final double totalPlPct;
+
+  /// 원화 예수금. Backend may split cash into KRW/USD; falls back to
+  /// [cashBalance] when only the legacy single value is present.
+  final double? cashKrw;
+
+  /// 달러 예수금 (해외/토스 계좌). Null/0 → hide the USD chip.
+  final double? cashUsd;
 
   factory UnifiedAccountSummary.fromJson(Map<String, dynamic> j) =>
       UnifiedAccountSummary(
@@ -65,6 +74,11 @@ class UnifiedAccountSummary {
         cashBalance: _d(j['cash_balance']),
         totalPl: _d(j['total_pl']),
         totalPlPct: _d(j['total_pl_pct']),
+        // Fall back to the legacy single cash_balance for KRW when the
+        // split fields are absent (backend R2 not yet shipped).
+        cashKrw: safeDoubleOrNull(j['cash_krw'], hint: 'unified.cashKrw') ??
+            safeDoubleOrNull(j['cash_balance'], hint: 'unified.cashBal'),
+        cashUsd: safeDoubleOrNull(j['cash_usd'], hint: 'unified.cashUsd'),
       );
 }
 
@@ -80,6 +94,8 @@ class UnifiedPosition {
     this.currentPrice,
     this.unrealizedPl,
     this.unrealizedPlPct,
+    this.currency = 'KRW',
+    this.marketCountry = 'KR',
   });
 
   final BrokerType broker;
@@ -93,11 +109,20 @@ class UnifiedPosition {
   final double? unrealizedPl;
   final double? unrealizedPlPct;
 
+  /// Native currency of the price fields ('KRW' / 'USD').
+  final String currency;
+
+  /// 'KR' (국장) or 'US' (미장). Drives the section split + flag badge.
+  final String marketCountry;
+
+  /// Prices below are in [currency]; for US they are native USD.
   double get marketValue => (currentPrice ?? avgBuyPrice) * quantity;
   double get costBasis => avgBuyPrice * quantity;
   double get plValue => unrealizedPl ?? (marketValue - costBasis);
   double get plPct =>
       unrealizedPlPct ?? (costBasis == 0 ? 0 : (plValue / costBasis) * 100);
+
+  bool get isUs => marketCountry.toUpperCase() == 'US';
 
   factory UnifiedPosition.fromJson(Map<String, dynamic> j) => UnifiedPosition(
         broker: BrokerType.fromWire(j['broker'] as String?),
@@ -113,6 +138,8 @@ class UnifiedPosition {
         unrealizedPl: safeDoubleOrNull(j['unrealized_pl'], hint: 'unified.pl'),
         unrealizedPlPct:
             safeDoubleOrNull(j['unrealized_pl_rate'], hint: 'unified.plpct'),
+        currency: ((j['currency'] as String?)?.toUpperCase()) ?? 'KRW',
+        marketCountry: ((j['market_country'] as String?)?.toUpperCase()) ?? 'KR',
       );
 }
 
@@ -125,6 +152,8 @@ class UnifiedPortfolio {
     required this.accounts,
     required this.positions,
     this.errors = const [],
+    this.fxRate,
+    this.fxAsOf,
   });
 
   final DateTime asOf;
@@ -134,6 +163,11 @@ class UnifiedPortfolio {
   final List<UnifiedAccountSummary> accounts;
   final List<UnifiedPosition> positions;
   final List<Map<String, dynamic>> errors;
+
+  /// USD→KRW rate the backend used for the KRW totals. Null until the
+  /// backend embeds it (R1); US positions then show '--' for KRW.
+  final double? fxRate;
+  final DateTime? fxAsOf;
 
   factory UnifiedPortfolio.fromJson(Map<String, dynamic> j) => UnifiedPortfolio(
         asOf: DateTime.tryParse(j['as_of'] as String? ?? '') ?? DateTime.now(),
@@ -149,6 +183,10 @@ class UnifiedPortfolio {
         errors: ((j['errors'] as List?) ?? const [])
             .map((e) => asJsonMap(e))
             .toList(),
+        fxRate: safeDoubleOrNull(j['fx_rate'], hint: 'unified.fxRate'),
+        fxAsOf: j['fx_as_of'] == null
+            ? null
+            : DateTime.tryParse(j['fx_as_of'] as String),
       );
 }
 

@@ -31,6 +31,8 @@ import '../presentation/quant/builder/builder_screen.dart';
 import '../presentation/quant/insights_tab/insights_screen.dart';
 import '../presentation/settings/settings_screen.dart';
 import '../presentation/shell/app_shell.dart';
+import '../presentation/stocks/stock_detail_screen.dart';
+import '../presentation/stocks/stock_search_screen.dart';
 import '../presentation/trade_journal/trade_journal_screen.dart';
 import '../presentation/watchlist/watchlist_screen.dart';
 
@@ -44,6 +46,7 @@ class NavDestination {
 const navDestinations = <NavDestination>[
   NavDestination(path: '/', label: '홈', icon: Icons.home_outlined),
   NavDestination(path: '/portfolio', label: '포트폴리오', icon: Icons.account_balance_wallet_outlined),
+  NavDestination(path: '/stocks', label: '종목', icon: Icons.search_outlined),
   NavDestination(path: '/watchlist', label: '관심종목', icon: Icons.star_border),
   NavDestination(path: '/trade-journal', label: '매매일지', icon: Icons.menu_book_outlined),
   NavDestination(path: '/alerts', label: '알림·자동매매', icon: Icons.notifications_active_outlined),
@@ -62,6 +65,19 @@ final routerProvider = Provider<GoRouter>((ref) {
         routes: [
           GoRoute(path: '/', builder: (_, __) => const HomeScreen()),
           GoRoute(path: '/portfolio', builder: (_, __) => const PortfolioScreen()),
+          GoRoute(
+            path: '/stocks',
+            builder: (_, __) => const StockSearchScreen(),
+            routes: [
+              GoRoute(
+                path: ':market/:code',
+                builder: (_, state) => StockDetailScreen(
+                  market: state.pathParameters['market']!,
+                  code: Uri.decodeComponent(state.pathParameters['code']!),
+                ),
+              ),
+            ],
+          ),
           GoRoute(path: '/watchlist', builder: (_, __) => const WatchlistScreen()),
           GoRoute(path: '/trade-journal', builder: (_, __) => const TradeJournalScreen()),
           GoRoute(path: '/alerts', builder: (_, __) => const AlertsScreen()),

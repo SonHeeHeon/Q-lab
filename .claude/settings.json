@@ -5,7 +5,9 @@
       "Bash(curl -s http://localhost:9000)",
       "Bash(pkill -f \"flutter run -d chrome\")",
       "Bash(grep -rn \"alertsApiProvider\\\\|\\\\.create\\(\\\\s*$\\\\|stockCode:\" lib/presentation/home lib/presentation/watchlist)",
-      "Bash(echo \"=== exit: $? ===\")"
+      "Bash(echo \"=== exit: $? ===\")",
+      "Bash(xargs ls -la)",
+      "Bash(grep -v \"^$\")"
     ]
   }
 }

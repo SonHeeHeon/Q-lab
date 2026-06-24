@@ -686,14 +686,17 @@ class KISRestClient:
         account_type: AccountType,
         row: dict[str, Any],
     ) -> PortfolioSummary:
+        cash_krw = self._to_optional_decimal(
+            row.get("dnca_tot_amt") or row.get("prvs_rcdl_excc_amt")
+        )
         return PortfolioSummary(
             account_type=account_type,
             total_evaluation_amount=self._to_optional_decimal(row.get("tot_evlu_amt")),
             stock_evaluation_amount=self._to_optional_decimal(row.get("scts_evlu_amt")),
             purchase_amount=self._to_optional_decimal(row.get("pchs_amt_smtl_amt")),
-            cash_amount=self._to_optional_decimal(
-                row.get("dnca_tot_amt") or row.get("prvs_rcdl_excc_amt")
-            ),
+            cash_amount=cash_krw,
+            cash_krw=cash_krw,
+            cash_usd=None,
             unrealized_pl=self._to_optional_decimal(row.get("evlu_pfls_smtl_amt")),
             unrealized_pl_rate=self._to_optional_decimal(
                 row.get("asst_icdc_erng_rt") or row.get("evlu_pfls_rt")

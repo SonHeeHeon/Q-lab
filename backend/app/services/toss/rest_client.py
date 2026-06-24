@@ -30,6 +30,8 @@ ACCOUNTS_PATH = "/api/v1/accounts"
 HOLDINGS_PATH = "/api/v1/holdings"
 PRICES_PATH = "/api/v1/prices"
 ORDERS_PATH = "/api/v1/orders"
+EXCHANGE_RATE_PATH = "/api/v1/exchange-rate"
+BUYING_POWER_PATH = "/api/v1/buying-power"
 
 
 class TossRestError(RuntimeError):
@@ -57,6 +59,18 @@ class TossAccount:
 class TossToken:
     access_token: str
     expires_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class TossExchangeRate:
+    base_currency: str
+    quote_currency: str
+    rate: Decimal
+    mid_rate: Decimal
+    change_type: str
+    valid_from: datetime
+    valid_until: datetime | None
+    raw: dict[str, Any]
 
 
 class TossRestClient:
@@ -146,6 +160,10 @@ class TossRestClient:
             for item in items
         ]
         summary = self._parse_summary(result, account_seq=account_seq)
+        summary = await self._fill_missing_cash_from_buying_power(
+            account_seq=account_seq,
+            summary=summary,
+        )
         return PortfolioResponse(
             broker=BrokerType.TOSS,
             account_type=None,
@@ -154,6 +172,22 @@ class TossRestClient:
             summary=summary,
             raw_output2=result,
         )
+
+    async def get_buying_power(
+        self,
+        *,
+        currency: str,
+        account_seq: int | str | None = None,
+    ) -> Decimal | None:
+        resolved_account_seq = await self.resolve_account_seq(account_seq)
+        payload = await self._request(
+            "GET",
+            BUYING_POWER_PATH,
+            headers={"X-Tossinvest-Account": str(resolved_account_seq)},
+            params={"currency": currency.upper()},
+        )
+        result = _as_dict(payload.get("result"))
+        return _optional_decimal(result.get("cashBuyingPower"))
 
     async def get_current_prices(self, symbols: list[str]) -> list[BrokerQuote]:
         if not symbols:
@@ -185,6 +219,42 @@ class TossRestClient:
         if not quotes:
             raise TossRestError(f"Toss price not found for symbol: {symbol}")
         return quotes[0]
+
+    async def get_exchange_rate(
+        self,
+        *,
+        base_currency: str = "USD",
+        quote_currency: str = "KRW",
+        date_time: datetime | None = None,
+    ) -> TossExchangeRate:
+        params: dict[str, str] = {
+            "baseCurrency": base_currency.upper(),
+            "quoteCurrency": quote_currency.upper(),
+        }
+        if date_time is not None:
+            params["dateTime"] = date_time.isoformat()
+
+        payload = await self._request("GET", EXCHANGE_RATE_PATH, params=params)
+        result = _as_dict(payload.get("result"))
+        if not result:
+            raise TossRestError("Toss exchange-rate response did not include result.")
+
+        rate = _optional_decimal(result.get("rate"))
+        mid_rate = _optional_decimal(result.get("midRate"))
+        valid_from = _parse_datetime(result.get("validFrom")) or datetime.now().astimezone()
+        if rate is None or mid_rate is None:
+            raise TossRestError("Toss exchange-rate response did not include rate/midRate.")
+
+        return TossExchangeRate(
+            base_currency=str(result.get("baseCurrency") or base_currency).upper(),
+            quote_currency=str(result.get("quoteCurrency") or quote_currency).upper(),
+            rate=rate,
+            mid_rate=mid_rate,
+            change_type=_normalize_change_type(result.get("rateChangeType"), rate, mid_rate),
+            valid_from=valid_from,
+            valid_until=_parse_datetime(result.get("validUntil")),
+            raw=result,
+        )
 
     async def place_order(self, request: OrderRequest) -> OrderResponse:
         account_seq = await self.resolve_account_seq(request.account_id)
@@ -345,21 +415,23 @@ class TossRestClient:
     def _parse_position(self, row: dict[str, Any], *, account_seq: int) -> PositionResponse:
         market_value = _as_dict(row.get("marketValue"))
         profit_loss = _as_dict(row.get("profitLoss"))
-        daily_profit_loss = _as_dict(row.get("dailyProfitLoss"))
+        symbol = str(row.get("symbol") or "")
+        currency = str(row.get("currency") or _infer_currency(symbol)).upper()
+        market_country = str(row.get("marketCountry") or _infer_market_country(symbol)).upper()
         return PositionResponse(
             broker=BrokerType.TOSS,
             account_type=None,
             account_id=str(account_seq),
-            stock_code=str(row.get("symbol") or ""),
+            stock_code=symbol,
             name=str(row.get("name") or "") or None,
-            currency=str(row.get("currency") or "") or None,
-            market_country=str(row.get("marketCountry") or "") or None,
+            currency=currency,
+            market_country=market_country,
             quantity=int(_decimal(row.get("quantity"))),
             avg_buy_price=_decimal(row.get("averagePurchasePrice")),
             current_price=_decimal(row.get("lastPrice")),
-            purchase_amount=_optional_decimal(market_value.get("purchaseAmount")),
-            evaluation_amount=_optional_decimal(market_value.get("amount")),
-            unrealized_pl=_optional_decimal(profit_loss.get("amount")),
+            purchase_amount=_money_in_currency(market_value.get("purchaseAmount"), currency),
+            evaluation_amount=_money_in_currency(market_value.get("amount"), currency),
+            unrealized_pl=_money_in_currency(profit_loss.get("amount"), currency),
             unrealized_pl_rate=_rate_to_percent(profit_loss.get("rate")),
         )
 
@@ -369,6 +441,9 @@ class TossRestClient:
         purchase = _as_dict(result.get("totalPurchaseAmount"))
         market_amount = _as_dict(market_value.get("amount"))
         profit_amount = _as_dict(profit_loss.get("amount"))
+        cash_amount = _cash_money_dict(result)
+        cash_krw = _optional_decimal(cash_amount.get("krw"))
+        cash_usd = _optional_decimal(cash_amount.get("usd"))
         return PortfolioSummary(
             broker=BrokerType.TOSS,
             account_type=None,
@@ -377,10 +452,38 @@ class TossRestClient:
             total_evaluation_amount=_optional_decimal(market_amount.get("krw")),
             stock_evaluation_amount=_optional_decimal(market_amount.get("krw")),
             purchase_amount=_optional_decimal(purchase.get("krw")),
-            cash_amount=None,
+            cash_amount=cash_krw,
+            cash_krw=cash_krw,
+            cash_usd=cash_usd,
             unrealized_pl=_optional_decimal(profit_amount.get("krw")),
             unrealized_pl_rate=_rate_to_percent(profit_loss.get("rate")),
         )
+
+    async def _fill_missing_cash_from_buying_power(
+        self,
+        *,
+        account_seq: int,
+        summary: PortfolioSummary,
+    ) -> PortfolioSummary:
+        if summary.cash_krw is None:
+            summary.cash_krw = await self._safe_buying_power("KRW", account_seq)
+            summary.cash_amount = summary.cash_krw
+        if summary.cash_usd is None:
+            summary.cash_usd = await self._safe_buying_power("USD", account_seq)
+        return summary
+
+    async def _safe_buying_power(
+        self,
+        currency: str,
+        account_seq: int,
+    ) -> Decimal | None:
+        try:
+            return await self.get_buying_power(
+                currency=currency,
+                account_seq=account_seq,
+            )
+        except TossRestError:
+            return None
 
     def _token_cache_path(self) -> Path:
         return self._settings.token_cache_dir / "toss.json"
@@ -455,9 +558,83 @@ def _optional_decimal(value: Any) -> Decimal | None:
     return _decimal(value)
 
 
+def _money_in_currency(value: Any, currency: str) -> Decimal | None:
+    if isinstance(value, dict):
+        for key in (currency.lower(), currency.upper()):
+            if key in value and value[key] not in (None, ""):
+                return _optional_decimal(value[key])
+        return None
+    return _optional_decimal(value)
+
+
+def _cash_money_dict(result: dict[str, Any]) -> dict[str, Any]:
+    for key in (
+        "depositAmount",
+        "availableAmount",
+        "freeDeposit",
+        "freeDepositAmount",
+        "cashBalance",
+        "cashBuyingPower",
+        "buyingPower",
+        "cashAmount",
+        "cash",
+        "deposit",
+        "availableCash",
+        "availableCashAmount",
+        "withdrawableAmount",
+        "withdrawableCash",
+        "withdrawableCashAmount",
+        "amount",
+    ):
+        value = result.get(key)
+        if isinstance(value, dict):
+            if _looks_like_money_dict(value):
+                return value
+            amount = value.get("amount")
+            if isinstance(amount, dict) and _looks_like_money_dict(amount):
+                return amount
+    return {}
+
+
+def _looks_like_money_dict(value: dict[str, Any]) -> bool:
+    return any(key in value for key in ("krw", "KRW", "usd", "USD"))
+
+
 def _rate_to_percent(value: Any) -> Decimal | None:
     parsed = _optional_decimal(value)
     return parsed * Decimal("100") if parsed is not None else None
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _normalize_change_type(value: Any, rate: Decimal, mid_rate: Decimal) -> str:
+    text = str(value or "").upper()
+    if text in {"UP", "EQUAL", "DOWN"}:
+        return text
+    if text in {"RISE", "RISING"}:
+        return "UP"
+    if text in {"FALL", "FALLING"}:
+        return "DOWN"
+    if rate > mid_rate:
+        return "UP"
+    if rate < mid_rate:
+        return "DOWN"
+    return "EQUAL"
+
+
+def _infer_currency(symbol: str) -> str:
+    return "KRW" if symbol.isdigit() else "USD"
+
+
+def _infer_market_country(symbol: str) -> str:
+    return "KR" if symbol.isdigit() else "US"
 
 
 def _optional_int(value: int | str | None) -> int | None:

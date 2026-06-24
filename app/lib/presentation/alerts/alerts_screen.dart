@@ -51,7 +51,7 @@ class AlertsScreen extends ConsumerWidget {
       floatingActionButton: FloatingActionButton.extended(
         icon: const Icon(Icons.add_alert_outlined),
         label: const Text('알림 · 주문 추가'),
-        onPressed: () => _showCreateDialog(context, ref),
+        onPressed: () => showCreateAlertDialog(context, ref),
       ),
       body: async.when(
         data: (_) => isCalendar
@@ -588,7 +588,16 @@ String _inferCountry(String s, String current) {
   return current;
 }
 
-Future<void> _showCreateDialog(BuildContext context, WidgetRef ref) async {
+/// Shows the alert / conditional-order creation dialog.
+///
+/// [initialSymbol] and [initialMarketCountry] pre-fill the form when
+/// launched from the stock detail screen.
+Future<void> showCreateAlertDialog(
+  BuildContext context,
+  WidgetRef ref, {
+  String? initialSymbol,
+  String? initialMarketCountry,
+}) async {
   // Pre-load the monitor config so we can warn about mock-order mode.
   bool orderIsMock = true;
   try {
@@ -598,13 +607,14 @@ Future<void> _showCreateDialog(BuildContext context, WidgetRef ref) async {
   }
   if (!context.mounted) return;
 
-  final symbolCtrl = TextEditingController();
+  final symbolCtrl = TextEditingController(text: initialSymbol ?? '');
   final thresholdCtrl = TextEditingController();
   final qtyCtrl = TextEditingController();
   final accountIdCtrl = TextEditingController();
   AlertCondition cond = AlertCondition.priceAbove;
-  String country = 'KR';
-  bool manualMarket = false;
+  String country = initialMarketCountry?.toUpperCase() ??
+      (initialSymbol != null ? _inferCountry(initialSymbol, 'KR') : 'KR');
+  bool manualMarket = initialMarketCountry != null;
   AlertAction action = AlertAction.notify;
   KisAccount accountType = KisAccount.paper;
 

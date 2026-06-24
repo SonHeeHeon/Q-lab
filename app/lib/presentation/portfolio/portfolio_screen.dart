@@ -15,6 +15,7 @@ import '../../data/api/portfolio_api.dart';
 import '../../data/ws/quotes_ws_client.dart';
 import '../../domain/entities/account.dart';
 import '../../domain/entities/position.dart';
+import '../../shared/format/money.dart';
 import '../../shared/widgets/empty_state.dart';
 import 'order_sheet.dart';
 import 'portfolio_controller.dart';
@@ -195,6 +196,8 @@ class _UnifiedContent extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final krPositions = portfolio.positions.where((p) => !p.isUs).toList();
+    final usPositions = portfolio.positions.where((p) => p.isUs).toList();
     return RefreshIndicator(
       onRefresh: () async {},
       child: ListView(
@@ -212,26 +215,96 @@ class _UnifiedContent extends StatelessWidget {
                 )),
             const SizedBox(height: 8),
           ],
-          Text('보유 종목',
-              style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
-          const SizedBox(height: 8),
           if (portfolio.positions.isEmpty)
             _EmptyHoldings()
-          else
-            Card(
-              child: ListView.separated(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                itemCount: portfolio.positions.length,
-                separatorBuilder: (_, __) => const Divider(height: 1),
-                itemBuilder: (_, i) =>
-                    _UnifiedPositionRow(position: portfolio.positions[i]),
+          else ...[
+            if (krPositions.isNotEmpty)
+              _PositionSection(
+                flag: '🇰🇷',
+                title: '국내 (국장)',
+                positions: krPositions,
+                fxRate: portfolio.fxRate,
               ),
-            ),
+            if (usPositions.isNotEmpty)
+              _PositionSection(
+                flag: '🇺🇸',
+                title: '해외 (미장)',
+                positions: usPositions,
+                fxRate: portfolio.fxRate,
+              ),
+          ],
           if (portfolio.errors.isNotEmpty) ...[
             const SizedBox(height: 12),
             _ErrorsCard(errors: portfolio.errors),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+/// A 국내/해외 holdings section: header (flag + title + subtotal) + card list.
+class _PositionSection extends StatelessWidget {
+  const _PositionSection({
+    required this.flag,
+    required this.title,
+    required this.positions,
+    required this.fxRate,
+  });
+
+  final String flag;
+  final String title;
+  final List<UnifiedPosition> positions;
+  final double? fxRate;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isUs = positions.isNotEmpty && positions.first.isUs;
+    // Subtotal from snapshot prices (currentPrice ?? avg) — not live ticks.
+    final nativeSubtotal =
+        positions.fold<double>(0, (s, p) => s + p.marketValue);
+    final String subtotalLabel;
+    if (isUs) {
+      final krw = usdToKrw(nativeSubtotal, fxRate);
+      subtotalLabel = krw == null
+          ? usdFmt.format(nativeSubtotal)
+          : '${krwFmt.format(krw)}  (${usdFmt.format(nativeSubtotal)})';
+    } else {
+      subtotalLabel = krwFmt.format(nativeSubtotal);
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(2, 4, 2, 6),
+            child: Row(
+              children: [
+                Text('$flag  $title',
+                    style: theme.textTheme.titleSmall
+                        ?.copyWith(fontWeight: FontWeight.w700)),
+                const Spacer(),
+                Text(subtotalLabel,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: theme.colorScheme.outline)),
+              ],
+            ),
+          ),
+          Card(
+            margin: EdgeInsets.zero,
+            child: ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: positions.length,
+              separatorBuilder: (_, __) => const Divider(height: 1),
+              itemBuilder: (_, i) =>
+                  _UnifiedPositionRow(position: positions[i], fxRate: fxRate),
+            ),
+          ),
         ],
       ),
     );
@@ -261,9 +334,15 @@ class _UnifiedSummaryCard extends StatelessWidget {
               style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 4),
-            Text('기준: ${_timeFmt.format(portfolio.asOf)}',
-                style: theme.textTheme.bodySmall
-                    ?.copyWith(color: theme.colorScheme.outline)),
+            Row(
+              children: [
+                Text('기준: ${_timeFmt.format(portfolio.asOf)}',
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: theme.colorScheme.outline)),
+                const Spacer(),
+                _FxChip(rate: portfolio.fxRate, asOf: portfolio.fxAsOf),
+              ],
+            ),
             const SizedBox(height: 12),
             Row(
               children: [
@@ -300,35 +379,67 @@ class _AccountSummaryTile extends StatelessWidget {
     final theme = Theme.of(context);
     final isUp = account.totalPl >= 0;
     final c = isUp ? Colors.redAccent : Colors.blueAccent;
+    final hasUsdCash = (account.cashUsd ?? 0) > 0;
+    final hasKrwCash = (account.cashKrw ?? 0) != 0;
     return Card(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        child: Row(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _BrokerBadge(broker: account.broker),
-            if (account.accountType != null) ...[
-              const SizedBox(width: 6),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Text(account.accountType!.label,
-                    style: theme.textTheme.labelSmall),
-              ),
-            ],
-            const Spacer(),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
+            Row(
               children: [
-                Text(_krw.format(account.totalValue),
-                    style: theme.textTheme.titleSmall
-                        ?.copyWith(fontWeight: FontWeight.w700)),
-                Text('${isUp ? '+' : ''}${_pct.format(account.totalPlPct)}%',
-                    style: theme.textTheme.bodySmall?.copyWith(color: c)),
+                _BrokerBadge(broker: account.broker),
+                if (account.accountType != null) ...[
+                  const SizedBox(width: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(account.accountType!.label,
+                        style: theme.textTheme.labelSmall),
+                  ),
+                ] else if (account.accountId != null) ...[
+                  const SizedBox(width: 6),
+                  Text('#${account.accountId}', style: theme.textTheme.labelSmall),
+                ],
+                const Spacer(),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(_krw.format(account.totalValue),
+                        style: theme.textTheme.titleSmall
+                            ?.copyWith(fontWeight: FontWeight.w700)),
+                    Text('${isUp ? '+' : ''}${_pct.format(account.totalPlPct)}%',
+                        style: theme.textTheme.bodySmall?.copyWith(color: c)),
+                  ],
+                ),
               ],
             ),
+            if (hasKrwCash || hasUsdCash) ...[
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  Icon(Icons.savings_outlined,
+                      size: 14, color: theme.colorScheme.outline),
+                  const SizedBox(width: 4),
+                  Text('예수금', style: theme.textTheme.bodySmall),
+                  const SizedBox(width: 8),
+                  Text(krwFmt.format(account.cashKrw ?? 0),
+                      style: theme.textTheme.bodySmall
+                          ?.copyWith(fontWeight: FontWeight.w600)),
+                  if (hasUsdCash) ...[
+                    Text('  ·  ', style: theme.textTheme.bodySmall),
+                    Text(usdFmt.format(account.cashUsd),
+                        style: theme.textTheme.bodySmall?.copyWith(
+                            fontWeight: FontWeight.w600,
+                            color: const Color(0xFF3182F6))),
+                  ],
+                ],
+              ),
+            ],
           ],
         ),
       ),
@@ -337,21 +448,34 @@ class _AccountSummaryTile extends StatelessWidget {
 }
 
 class _UnifiedPositionRow extends ConsumerWidget {
-  const _UnifiedPositionRow({required this.position});
+  const _UnifiedPositionRow({required this.position, required this.fxRate});
   final UnifiedPosition position;
+  final double? fxRate;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final p = position;
+    final cur = p.currency;
+    final isUs = p.isUs;
 
+    // Live tick is in the position's native currency (USD for 미장).
     final liveTick = ref.watch(quotesProvider.select((m) => m[p.stockCode]));
     final livePrice = liveTick?.price ?? p.currentPrice ?? p.avgBuyPrice;
     final costBasis = p.avgBuyPrice * p.quantity;
-    final pl = livePrice * p.quantity - costBasis;
-    final plPct = costBasis == 0 ? 0.0 : (pl / costBasis) * 100;
-    final isUp = pl >= 0;
+    final plNative = livePrice * p.quantity - costBasis;
+    final plPct = costBasis == 0 ? 0.0 : (plNative / costBasis) * 100;
+    final isUp = plNative >= 0;
     final plColor = isUp ? Colors.redAccent : Colors.blueAccent;
+
+    // Primary figures in KRW (converted for 미장 via fxRate); '--' when a
+    // USD value can't be converted yet (fxRate missing).
+    final priceMain = krwFromNative(livePrice, cur, fxRate);
+    final plKrw = krwFromNative(plNative, cur, fxRate);
+    final plMain = plKrw == '--' ? '--' : '${isUp ? '+' : ''}$plKrw';
+    final priceSub = isUs
+        ? '${usdFmt.format(livePrice)}  ·  평단 ${usdFmt.format(p.avgBuyPrice)}'
+        : '평단 ${krwFmt.format(p.avgBuyPrice)}';
 
     return InkWell(
       // Open the order sheet routed to *this position's* broker + account
@@ -402,13 +526,12 @@ class _UnifiedPositionRow extends ConsumerWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  Text(_krw.format(livePrice),
+                  Text(priceMain,
                       style: theme.textTheme.titleSmall?.copyWith(
                         fontWeight: FontWeight.w600,
                         color: liveTick == null ? null : plColor,
                       )),
-                  Text('평단 ${_krw.format(p.avgBuyPrice)}',
-                      style: theme.textTheme.bodySmall),
+                  Text(priceSub, style: theme.textTheme.bodySmall),
                 ],
               ),
             ),
@@ -419,7 +542,7 @@ class _UnifiedPositionRow extends ConsumerWidget {
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   Text(
-                    '${isUp ? '+' : ''}${_krw.format(pl)}',
+                    plMain,
                     style: theme.textTheme.titleSmall?.copyWith(
                       color: plColor,
                       fontWeight: FontWeight.w700,
@@ -433,6 +556,36 @@ class _UnifiedPositionRow extends ConsumerWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// USD/KRW rate chip shown in the unified summary. Renders a muted
+/// placeholder until the backend embeds `fx_rate` (R1).
+class _FxChip extends StatelessWidget {
+  const _FxChip({required this.rate, required this.asOf});
+  final double? rate;
+  final DateTime? asOf;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    if (rate == null) {
+      return Text('환율 불러오는 중',
+          style: theme.textTheme.bodySmall
+              ?.copyWith(color: theme.colorScheme.outline));
+    }
+    final rateStr = NumberFormat('#,##0.0').format(rate);
+    final asOfStr = asOf == null ? '' : ' · ${_timeFmt.format(asOf!)}';
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: const Color(0xFF3182F6).withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text('환율 ₩$rateStr/\$1$asOfStr',
+          style: theme.textTheme.labelSmall
+              ?.copyWith(color: const Color(0xFF3182F6), fontWeight: FontWeight.w600)),
     );
   }
 }

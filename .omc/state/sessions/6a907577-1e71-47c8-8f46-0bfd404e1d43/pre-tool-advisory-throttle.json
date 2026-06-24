@@ -1,14 +1,34 @@
 {
   "version": 1,
   "entries": {
+    "445ed27a3872b681d98190bae61ccb84954e1bc4e140df5370be958dee776b3a": {
+      "last_emitted_at_ms": 1782318184676,
+      "message": "Verify changes work after editing. Test functionality before marking complete."
+    },
     "466399dafa2d20f60587180bad0a07358eb7f2bce724df0ff682f038ad33f5ad": {
-      "last_emitted_at_ms": 1782314478053,
+      "last_emitted_at_ms": 1782318127042,
       "message": "Read multiple files in parallel when possible for faster analysis."
     },
     "79a93d4a2f8f50b95f852280616242fee1855dc99a3c75211917f55e72e95fae": {
-      "last_emitted_at_ms": 1782314474747,
+      "last_emitted_at_ms": 1782318119233,
       "message": "Use parallel execution for independent tasks. Use run_in_background for long operations (npm install, builds, tests)."
+    },
+    "4f7a67fba0a8473e9883d9e8dffbb2d72e00a4a1eeb4fa80cb14213b167dc90f": {
+      "last_emitted_at_ms": 1782317318952,
+      "message": "Mark todos in_progress BEFORE starting, completed IMMEDIATELY after finishing."
+    },
+    "808cb04420bcb368ab4716038ddd950b51198d0402b6cf8e965d66ca42ebccbe": {
+      "last_emitted_at_ms": 1782316225694,
+      "message": "[SLOP WARNING] Detected fallback/workaround language in this tool input. Do not make potential slop: avoid ad-hoc fallback layers, workaround shims, or environment-specific patches unless explicitly justified. For architecture concerns, consult the architect for a concrete design first. If this seems environment-specific, ask the user to confirm constraints before proceeding.\n\nVerify changes work after editing. Test functionality before marking complete."
+    },
+    "bb007802bcd71f728cf2a0e7d0caaa980d8611167a80a81c0cc4696fb8fb0be6": {
+      "last_emitted_at_ms": 1782315727934,
+      "message": "Spawning agent: Explore (inherit) | Task: Explore backend FX and quotes"
+    },
+    "d0eaee3f71fa607ffa463389c075ddd21a1a1b75d8eab5894bc90cf265a076b1": {
+      "last_emitted_at_ms": 1782315718946,
+      "message": "Spawning agent: Explore (inherit) | Task: Explore backend portfolio response"
     }
   },
-  "updated_at": "2026-06-24T15:21:18.053Z"
+  "updated_at": "2026-06-24T16:23:04.676Z"
 }

@@ -82,6 +82,8 @@ class PortfolioSummary(BaseModel):
     stock_evaluation_amount: Decimal | None = None
     purchase_amount: Decimal | None = None
     cash_amount: Decimal | None = None
+    cash_krw: Decimal | None = None
+    cash_usd: Decimal | None = None
     unrealized_pl: Decimal | None = None
     unrealized_pl_rate: Decimal | None = None
 
@@ -163,6 +165,8 @@ class AccountSummaryResponse(BaseModel):
     currency: str | None = "KRW"
     total_value: Decimal
     cash_balance: Decimal
+    cash_krw: Decimal | None = None
+    cash_usd: Decimal | None = None
     total_pl: Decimal
     total_pl_pct: Decimal
 
@@ -177,6 +181,8 @@ class UnifiedPortfolioResponse(BaseModel):
     total_value: Decimal
     total_pl: Decimal
     total_pl_pct: Decimal
+    fx_rate: Decimal | None = None
+    fx_as_of: datetime | None = None
     accounts: list[AccountSummaryResponse]
     positions: list[UnifiedPositionResponse]
     errors: list[dict[str, object]] = Field(default_factory=list)

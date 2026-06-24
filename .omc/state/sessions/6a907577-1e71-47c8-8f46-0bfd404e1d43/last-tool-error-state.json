@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"cd /Users/honey/Dev/StockCollect_Project/app && flutter analyze 2>&1\",\"timeout\":60000,\"description\":\"Run flutter analyze\"}",
+  "error": "Exit code 1\nAnalyzing app...                                                \n\nwarning • Unused import: 'dart:async'. Try removing the import directive • lib/data/api/api_client.dart:11:8 • unused_import\n   info • The constant name 'KIS' isn't a lowerCamelCase identifier. Try changing the name to follow the lowerCamelCase style • lib/data/api/portfolio_api.dart:19:3 • constant_identifier_names\n   info • The constant name 'TOSS' isn't a lowerCamelCase identifier. Try changing the name to follow th...",
+  "timestamp": "2026-06-24T16:13:18.366Z",
+  "retry_count": 1
+}

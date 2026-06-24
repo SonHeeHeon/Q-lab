@@ -69,6 +69,26 @@ class FakeTossRestClient(TossRestClient):
                     ],
                 }
             }
+        if path == "/api/v1/buying-power":
+            currency = kwargs.get("params", {}).get("currency")
+            if currency == "KRW":
+                return {"result": {"currency": "KRW", "cashBuyingPower": "250000"}}
+            if currency == "USD":
+                return {"result": {"currency": "USD", "cashBuyingPower": "12.50"}}
+            raise AssertionError(currency)
+        if path == "/api/v1/exchange-rate":
+            return {
+                "result": {
+                    "baseCurrency": "USD",
+                    "quoteCurrency": "KRW",
+                    "rate": "1382.0",
+                    "midRate": "1380.5",
+                    "basisPoint": "10.86",
+                    "rateChangeType": "UP",
+                    "validFrom": "2026-06-25T09:30:00+09:00",
+                    "validUntil": "2026-06-25T09:31:00+09:00",
+                }
+            }
         if path == "/api/v1/prices":
             return {
                 "result": [
@@ -92,6 +112,8 @@ async def test_toss_balance_maps_to_portfolio_schema() -> None:
     assert portfolio.broker is BrokerType.TOSS
     assert portfolio.account_id == "1"
     assert portfolio.summary.total_evaluation_amount == Decimal("7200000")
+    assert portfolio.summary.cash_krw == Decimal("250000")
+    assert portfolio.summary.cash_usd == Decimal("12.50")
     assert portfolio.summary.unrealized_pl_rate == Decimal("10.7700")
     assert portfolio.positions[0].stock_code == "005930"
     assert portfolio.positions[0].currency == "KRW"
@@ -108,6 +130,20 @@ async def test_toss_current_price_maps_to_broker_quote() -> None:
     assert quote.symbol == "005930"
     assert quote.last_price == Decimal("72000")
     assert quote.currency == "KRW"
+
+
+@pytest.mark.asyncio
+async def test_toss_exchange_rate_maps_to_reference_quote() -> None:
+    client = FakeTossRestClient()
+
+    fx_rate = await client.get_exchange_rate(base_currency="USD", quote_currency="KRW")
+
+    assert fx_rate.base_currency == "USD"
+    assert fx_rate.quote_currency == "KRW"
+    assert fx_rate.rate == Decimal("1382.0")
+    assert fx_rate.mid_rate == Decimal("1380.5")
+    assert fx_rate.change_type == "UP"
+    assert fx_rate.valid_from.isoformat() == "2026-06-25T09:30:00+09:00"
 
 
 @pytest.mark.asyncio
@@ -128,3 +164,12 @@ async def test_toss_mock_order_never_calls_order_endpoint() -> None:
     assert response.broker is BrokerType.TOSS
     assert response.broker_order_no is not None
     assert response.raw["mock"] is True
+
+
+@pytest.mark.asyncio
+async def test_toss_buying_power_maps_cash_amount() -> None:
+    client = FakeTossRestClient()
+
+    buying_power = await client.get_buying_power(currency="USD", account_seq=1)
+
+    assert buying_power == Decimal("12.50")

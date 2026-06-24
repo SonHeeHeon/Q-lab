@@ -192,15 +192,33 @@
   },
   "hotPaths": [
     {
-      "path": "app/lib/presentation/portfolio/order_sheet.dart",
-      "accessCount": 10,
-      "lastAccessed": 1782314733491,
+      "path": "app/lib/presentation/alerts/alerts_screen.dart",
+      "accessCount": 15,
+      "lastAccessed": 1782317540118,
       "type": "file"
     },
     {
-      "path": "app/lib/presentation/alerts/alerts_screen.dart",
+      "path": "app/lib/presentation/portfolio/order_sheet.dart",
+      "accessCount": 12,
+      "lastAccessed": 1782317053772,
+      "type": "file"
+    },
+    {
+      "path": "app/lib/presentation/portfolio/portfolio_screen.dart",
+      "accessCount": 11,
+      "lastAccessed": 1782318127172,
+      "type": "file"
+    },
+    {
+      "path": "app/lib/data/api/portfolio_api.dart",
       "accessCount": 7,
-      "lastAccessed": 1782314978044,
+      "lastAccessed": 1782316264278,
+      "type": "file"
+    },
+    {
+      "path": "app/lib/core/routes.dart",
+      "accessCount": 6,
+      "lastAccessed": 1782317523879,
       "type": "file"
     },
     {
@@ -210,15 +228,21 @@
       "type": "file"
     },
     {
-      "path": "app/lib/data/api/portfolio_api.dart",
-      "accessCount": 2,
-      "lastAccessed": 1782314670080,
+      "path": "backend/app/services/kis/rest_client.py",
+      "accessCount": 3,
+      "lastAccessed": 1782315748397,
       "type": "file"
     },
     {
-      "path": "app/lib/presentation/portfolio/portfolio_screen.dart",
-      "accessCount": 2,
-      "lastAccessed": 1782314775860,
+      "path": "app/lib/presentation/stocks/stock_detail_screen.dart",
+      "accessCount": 3,
+      "lastAccessed": 1782317751686,
+      "type": "file"
+    },
+    {
+      "path": "app/lib/data/api/stocks_api.dart",
+      "accessCount": 3,
+      "lastAccessed": 1782318184808,
       "type": "file"
     },
     {
@@ -234,9 +258,27 @@
       "type": "file"
     },
     {
-      "path": "app/lib/core/routes.dart",
+      "path": "backend/app/services/market_data/quotes.py",
       "accessCount": 2,
-      "lastAccessed": 1782314989174,
+      "lastAccessed": 1782315742160,
+      "type": "file"
+    },
+    {
+      "path": "backend/app/services/toss/rest_client.py",
+      "accessCount": 2,
+      "lastAccessed": 1782315742358,
+      "type": "file"
+    },
+    {
+      "path": "backend/app/api/quotes.py",
+      "accessCount": 2,
+      "lastAccessed": 1782315805176,
+      "type": "file"
+    },
+    {
+      "path": "app/lib/domain/entities/account.dart",
+      "accessCount": 2,
+      "lastAccessed": 1782317274888,
       "type": "file"
     },
     {
@@ -246,15 +288,153 @@
       "type": "file"
     },
     {
-      "path": "app/lib/domain/entities/account.dart",
-      "accessCount": 1,
-      "lastAccessed": 1782314614424,
-      "type": "file"
-    },
-    {
       "path": "app/test/order_alert_payload_test.dart",
       "accessCount": 1,
       "lastAccessed": 1782315062658,
+      "type": "file"
+    },
+    {
+      "path": "backend/app/api/portfolio.py",
+      "accessCount": 1,
+      "lastAccessed": 1782315724038,
+      "type": "file"
+    },
+    {
+      "path": "backend/app/schemas/portfolio.py",
+      "accessCount": 1,
+      "lastAccessed": 1782315724107,
+      "type": "file"
+    },
+    {
+      "path": "backend/app/services/brokers/base.py",
+      "accessCount": 1,
+      "lastAccessed": 1782315739659,
+      "type": "file"
+    },
+    {
+      "path": "shared/domain/stock.py",
+      "accessCount": 1,
+      "lastAccessed": 1782315744820,
+      "type": "file"
+    },
+    {
+      "path": "shared/domain/position.py",
+      "accessCount": 1,
+      "lastAccessed": 1782315744839,
+      "type": "file"
+    },
+    {
+      "path": "docs/toss_openapi.json",
+      "accessCount": 1,
+      "lastAccessed": 1782315755082,
+      "type": "file"
+    },
+    {
+      "path": "backend/tests/test_api_portfolio.py",
+      "accessCount": 1,
+      "lastAccessed": 1782315755730,
+      "type": "file"
+    },
+    {
+      "path": "app/lib/presentation/home/home_screen.dart",
+      "accessCount": 1,
+      "lastAccessed": 1782315778827,
+      "type": "file"
+    },
+    {
+      "path": "app/lib/domain/entities/position.dart",
+      "accessCount": 1,
+      "lastAccessed": 1782315783893,
+      "type": "file"
+    },
+    {
+      "path": "PROJECT_BLUEPRINT.md",
+      "accessCount": 1,
+      "lastAccessed": 1782315793768,
+      "type": "file"
+    },
+    {
+      "path": "backend/app/services/kis/market_snapshot.py",
+      "accessCount": 1,
+      "lastAccessed": 1782315810270,
+      "type": "file"
+    },
+    {
+      "path": "app/lib/data/ws/quotes_ws_client.dart",
+      "accessCount": 1,
+      "lastAccessed": 1782315816477,
+      "type": "file"
+    },
+    {
+      "path": "app/lib/shared/format/money.dart",
+      "accessCount": 1,
+      "lastAccessed": 1782316289071,
+      "type": "file"
+    },
+    {
+      "path": "app/test/portfolio_currency_test.dart",
+      "accessCount": 1,
+      "lastAccessed": 1782316505177,
+      "type": "file"
+    },
+    {
+      "path": "app/lib/presentation/shell/app_shell.dart",
+      "accessCount": 1,
+      "lastAccessed": 1782317043344,
+      "type": "file"
+    },
+    {
+      "path": "app/lib/data/api/watchlist_api.dart",
+      "accessCount": 1,
+      "lastAccessed": 1782317043674,
+      "type": "file"
+    },
+    {
+      "path": "app/lib/data/api/api_client.dart",
+      "accessCount": 1,
+      "lastAccessed": 1782317048812,
+      "type": "file"
+    },
+    {
+      "path": "app/lib/data/parse_utils.dart",
+      "accessCount": 1,
+      "lastAccessed": 1782317053137,
+      "type": "file"
+    },
+    {
+      "path": "app/lib/presentation/watchlist/watchlist_screen.dart",
+      "accessCount": 1,
+      "lastAccessed": 1782317059293,
+      "type": "file"
+    },
+    {
+      "path": "app/pubspec.yaml",
+      "accessCount": 1,
+      "lastAccessed": 1782317086357,
+      "type": "file"
+    },
+    {
+      "path": "app/lib/presentation/settings/settings_controller.dart",
+      "accessCount": 1,
+      "lastAccessed": 1782317281351,
+      "type": "file"
+    },
+    {
+      "path": "app/lib/presentation/stocks/stocks_controller.dart",
+      "accessCount": 1,
+      "lastAccessed": 1782317366507,
+      "type": "file"
+    },
+    {
+      "path": "app/lib/presentation/stocks/stock_search_screen.dart",
+      "accessCount": 1,
+      "lastAccessed": 1782317391272,
+      "type": "file"
+    },
+    {
+      "path": "app/test/stocks_api_test.dart",
+      "accessCount": 1,
+      "lastAccessed": 1782317583990,
       "type": "file"
     }
   ],

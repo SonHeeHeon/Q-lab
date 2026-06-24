@@ -39,6 +39,7 @@ from backend.app.services.kis.order_tracker import (
     sync_external_orders_once,
     track_trade_until_terminal,
 )
+from backend.app.services.market_data.fx import FxRate, FxRateError, get_fx_rate
 from backend.app.services.market_data.names import lookup_stock_names
 from backend.app.services.market_data.quotes import fetch_current_quotes
 from shared.db.models import Account, Setting, Trade
@@ -115,8 +116,9 @@ async def get_unified_portfolio(
                 }
             )
 
+    fx_rate = await _portfolio_fx_rate(portfolios, errors)
     return UnifiedPortfolioEnvelope(
-        data=_unified_response(portfolios, errors),
+        data=_unified_response(portfolios, errors, fx_rate),
         error=None,
     )
 
@@ -404,6 +406,7 @@ async def _enrich_position_prices(
 def _unified_response(
     portfolios: list[PortfolioResponse],
     errors: list[dict[str, object]],
+    fx_rate: FxRate | None = None,
 ) -> UnifiedPortfolioResponse:
     accounts: list[AccountSummaryResponse] = []
     positions: list[UnifiedPositionResponse] = []
@@ -414,10 +417,11 @@ def _unified_response(
 
     for portfolio in portfolios:
         summary = portfolio.summary
-        account_value = summary.total_evaluation_amount or Decimal("0")
-        account_cash = summary.cash_amount or Decimal("0")
-        account_pl = summary.unrealized_pl or Decimal("0")
-        account_cost = summary.purchase_amount or Decimal("0")
+        account_value, account_cost, account_pl, cash_krw, cash_usd = _account_totals(
+            portfolio,
+            fx_rate,
+        )
+        account_cash = cash_krw or Decimal("0")
         account_pl_pct = _pct(account_pl, account_cost)
 
         total_value += account_value
@@ -431,6 +435,8 @@ def _unified_response(
                 currency=summary.currency,
                 total_value=account_value,
                 cash_balance=account_cash,
+                cash_krw=cash_krw,
+                cash_usd=cash_usd,
                 total_pl=account_pl,
                 total_pl_pct=account_pl_pct,
             )
@@ -463,10 +469,94 @@ def _unified_response(
         total_value=total_value,
         total_pl=total_pl,
         total_pl_pct=_pct(total_pl, total_cost),
+        fx_rate=fx_rate.rate if fx_rate is not None else None,
+        fx_as_of=fx_rate.as_of if fx_rate is not None else None,
         accounts=accounts,
         positions=positions,
         errors=errors,
     )
+
+
+async def _portfolio_fx_rate(
+    portfolios: list[PortfolioResponse],
+    errors: list[dict[str, object]],
+) -> FxRate | None:
+    needs_fx = any(
+        portfolio.broker is BrokerType.TOSS
+        or (portfolio.summary.cash_usd is not None and portfolio.summary.cash_usd != 0)
+        or any((position.currency or "").upper() == "USD" for position in portfolio.positions)
+        for portfolio in portfolios
+    )
+    if not needs_fx:
+        return None
+    try:
+        return await get_fx_rate(base="USD", quote="KRW")
+    except FxRateError as exc:
+        errors.append(
+            {
+                "broker": BrokerType.TOSS.value,
+                "source": "fx_rate",
+                "message": str(exc),
+            }
+        )
+        return None
+
+
+def _account_totals(
+    portfolio: PortfolioResponse,
+    fx_rate: FxRate | None,
+) -> tuple[Decimal, Decimal, Decimal, Decimal | None, Decimal | None]:
+    summary = portfolio.summary
+    cash_krw = summary.cash_krw
+    if cash_krw is None and (summary.currency or "KRW").upper() == "KRW":
+        cash_krw = summary.cash_amount
+    cash_usd = summary.cash_usd
+
+    if portfolio.broker is not BrokerType.TOSS:
+        return (
+            summary.total_evaluation_amount or Decimal("0"),
+            summary.purchase_amount or Decimal("0"),
+            summary.unrealized_pl or Decimal("0"),
+            cash_krw,
+            cash_usd,
+        )
+
+    stock_value = Decimal("0")
+    stock_cost = Decimal("0")
+    stock_pl = Decimal("0")
+    for position in portfolio.positions:
+        currency = (position.currency or _infer_position_currency(position.stock_code)).upper()
+        quantity = Decimal(position.quantity)
+        evaluation = position.evaluation_amount
+        if evaluation is None and position.current_price is not None:
+            evaluation = position.current_price * quantity
+        purchase = position.purchase_amount
+        if purchase is None:
+            purchase = position.avg_buy_price * quantity
+        profit_loss = position.unrealized_pl
+        if profit_loss is None and evaluation is not None and purchase is not None:
+            profit_loss = evaluation - purchase
+
+        stock_value += _to_krw(evaluation, currency, fx_rate)
+        stock_cost += _to_krw(purchase, currency, fx_rate)
+        stock_pl += _to_krw(profit_loss, currency, fx_rate)
+
+    account_value = stock_value + (cash_krw or Decimal("0"))
+    if cash_usd is not None:
+        account_value += _to_krw(cash_usd, "USD", fx_rate)
+    return account_value, stock_cost, stock_pl, cash_krw, cash_usd
+
+
+def _to_krw(amount: Decimal | None, currency: str, fx_rate: FxRate | None) -> Decimal:
+    if amount is None:
+        return Decimal("0")
+    if currency.upper() == "USD":
+        return amount * fx_rate.rate if fx_rate is not None else Decimal("0")
+    return amount
+
+
+def _infer_position_currency(symbol: str) -> str:
+    return "KRW" if symbol.isdigit() else "USD"
 
 
 def _pct(numerator: Decimal, denominator: Decimal) -> Decimal:

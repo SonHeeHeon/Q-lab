@@ -56,14 +56,14 @@ class WatchlistCategoryResponse(BaseModel):
 
 
 class WatchlistEntryCreate(BaseModel):
-    stock_code: str = Field(min_length=1, max_length=12)
+    stock_code: str = Field(min_length=1, max_length=20)
     category_id: int
     reason: str = Field(min_length=1)
 
     @field_validator("stock_code")
     @classmethod
     def normalize_stock_code(cls, value: str) -> str:
-        return value.strip().zfill(6)
+        return _normalize_watchlist_symbol(value)
 
     @field_validator("reason")
     @classmethod
@@ -89,6 +89,9 @@ class WatchlistEntryPatch(BaseModel):
 class WatchlistEntryResponse(BaseModel):
     id: int
     stock_code: str
+    symbol: str
+    market_country: str
+    broker: str
     category_id: int
     reason: str
     added_at: datetime
@@ -257,10 +260,20 @@ def _category_response(category: WatchlistCategory) -> WatchlistCategoryResponse
 
 
 def _entry_response(entry: WatchlistEntry) -> WatchlistEntryResponse:
+    symbol = _normalize_watchlist_symbol(entry.stock_code)
+    market_country = "KR" if symbol.isdigit() else "US"
     return WatchlistEntryResponse(
         id=entry.id,
-        stock_code=entry.stock_code,
+        stock_code=symbol,
+        symbol=symbol,
+        market_country=market_country,
+        broker="KIS" if market_country == "KR" else "TOSS",
         category_id=entry.category_id,
         reason=entry.reason,
         added_at=entry.added_at,
     )
+
+
+def _normalize_watchlist_symbol(value: str) -> str:
+    stripped = value.strip().upper()
+    return stripped.zfill(6) if stripped.isdigit() else stripped
