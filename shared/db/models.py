@@ -261,6 +261,34 @@ class Setting(ServiceBase):
     )
 
 
+class PortfolioSnapshot(ServiceBase):
+    """Daily portfolio NAV per account for performance tracking.
+
+    Populated by the NAV snapshot batch job (source='BROKER', the actual
+    broker-reported NAV) so paper/real equity curves accumulate over time.
+    When absent, the performance API reconstructs a curve from ``trades`` +
+    historical prices instead.
+    """
+
+    __tablename__ = "portfolio_snapshots"
+
+    account_type: Mapped[str] = mapped_column(Text, primary_key=True)
+    date: Mapped[date] = mapped_column(Date, primary_key=True)
+    nav: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    cash: Mapped[Decimal] = mapped_column(
+        Numeric, nullable=False, server_default=text("0")
+    )
+    holdings_value: Mapped[Decimal] = mapped_column(
+        Numeric, nullable=False, server_default=text("0")
+    )
+    source: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'BROKER'")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
 class Stock(ResearchBase):
     __tablename__ = "stocks"
 
@@ -349,6 +377,11 @@ Index("idx_trades_status_checked", Trade.status, Trade.last_checked_at)
 Index("idx_watchlist_stock", WatchlistEntry.stock_code)
 Index("idx_alerts_triggered", Alert.triggered_at.desc())
 Index("idx_journal_trade", TradeJournalEntry.trade_id)
+Index(
+    "idx_snapshots_account_date",
+    PortfolioSnapshot.account_type,
+    PortfolioSnapshot.date.desc(),
+)
 Index(
     "idx_batch_date",
     BatchAnalysisResult.analysis_date.desc(),

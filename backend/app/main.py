@@ -18,6 +18,7 @@ from backend.app.api.alerts import router as alerts_router
 from backend.app.api.backtest import router as backtest_router
 from backend.app.api.fx import router as fx_router
 from backend.app.api.heatmap import router as heatmap_router
+from backend.app.api.performance import router as performance_router
 from backend.app.api.portfolio import router as portfolio_router
 from backend.app.api.principles import router as principles_router
 from backend.app.api.quant import router as quant_router
@@ -218,6 +219,7 @@ app.include_router(backtest_router)
 app.include_router(fx_router)
 app.include_router(heatmap_router)
 app.include_router(alerts_router)
+app.include_router(performance_router)
 app.include_router(portfolio_router)
 app.include_router(principles_router)
 app.include_router(quant_router)
