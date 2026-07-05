@@ -70,12 +70,39 @@ class AppShell extends ConsumerWidget {
     return Scaffold(
       body: child,
       bottomNavigationBar: NavigationBar(
-        selectedIndex: idx.clamp(0, 4),
-        onDestinationSelected: onTap,
+        selectedIndex: idx >= 4 ? 4 : idx,
+        onDestinationSelected: (i) => i == 4 ? _showMoreSheet(context) : onTap(i),
         destinations: [
-          for (final d in navDestinations.take(5))
+          for (final d in navDestinations.take(4))
             NavigationDestination(icon: Icon(d.icon), label: d.label),
+          const NavigationDestination(icon: Icon(Icons.more_horiz), label: '더보기'),
         ],
+      ),
+    );
+  }
+
+  /// Bottom sheet listing every destination beyond the first 4 tabs (built
+  /// dynamically from [navDestinations] so new destinations show up here
+  /// automatically without further edits).
+  void _showMoreSheet(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            for (final d in navDestinations.skip(4))
+              ListTile(
+                leading: Icon(d.icon),
+                title: Text(d.label),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  context.go(d.path);
+                },
+              ),
+          ],
+        ),
       ),
     );
   }

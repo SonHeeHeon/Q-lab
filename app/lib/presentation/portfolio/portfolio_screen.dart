@@ -189,17 +189,17 @@ class _UnifiedPane extends ConsumerWidget {
   }
 }
 
-class _UnifiedContent extends StatelessWidget {
+class _UnifiedContent extends ConsumerWidget {
   const _UnifiedContent({required this.portfolio});
   final UnifiedPortfolio portfolio;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final krPositions = portfolio.positions.where((p) => !p.isUs).toList();
     final usPositions = portfolio.positions.where((p) => p.isUs).toList();
     return RefreshIndicator(
-      onRefresh: () async {},
+      onRefresh: () => ref.refresh(unifiedPortfolioProvider.future),
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -685,15 +685,15 @@ class _AccountTabs extends StatelessWidget {
 // KIS detail body
 // ---------------------------------------------------------------------------
 
-class _DetailBody extends StatelessWidget {
+class _DetailBody extends ConsumerWidget {
   const _DetailBody({required this.detail});
   final AccountDetail detail;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     return RefreshIndicator(
-      onRefresh: () async {},
+      onRefresh: () => ref.refresh(accountDetailProvider.future),
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [

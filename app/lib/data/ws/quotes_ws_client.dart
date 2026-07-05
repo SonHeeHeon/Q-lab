@@ -20,7 +20,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as ws_status;
@@ -58,6 +58,7 @@ class QuotesNotifier extends Notifier<Map<String, Tick>> {
   int _reconnectAttempt = 0;
   Timer? _reconnectTimer;
   bool _disposed = false;
+  late final AppLifecycleListener _lifecycleListener;
 
   // Listeners for alert_triggered frames (Alerts screen subscribes here).
   final _alertController = StreamController<int>.broadcast();
@@ -66,6 +67,7 @@ class QuotesNotifier extends Notifier<Map<String, Tick>> {
   @override
   Map<String, Tick> build() {
     ref.onDispose(_dispose);
+    _lifecycleListener = AppLifecycleListener(onStateChange: _onLifecycleStateChange);
     _connect();
     return {};
   }
@@ -109,6 +111,7 @@ class QuotesNotifier extends Notifier<Map<String, Tick>> {
 
   void _connect() {
     if (_disposed) return;
+    if (_channel != null) return; // guard against double-connect
     final uri = Uri.parse('${Env.wsBaseUrl}/ws/quotes');
     try {
       _channel = WebSocketChannel.connect(uri);
@@ -172,9 +175,7 @@ class QuotesNotifier extends Notifier<Map<String, Tick>> {
 
   void _scheduleReconnect() {
     if (_disposed) return;
-    _sub?.cancel();
-    _channel?.sink.close(ws_status.goingAway).catchError((_) {});
-    _channel = null;
+    _teardownSocket();
 
     final delaySeconds = (1 << _reconnectAttempt).clamp(1, 30);
     _reconnectAttempt = (_reconnectAttempt + 1).clamp(0, 5);
@@ -182,9 +183,37 @@ class QuotesNotifier extends Notifier<Map<String, Tick>> {
     _reconnectTimer = Timer(Duration(seconds: delaySeconds), _connect);
   }
 
+  void _teardownSocket() {
+    _sub?.cancel();
+    _channel?.sink.close(ws_status.goingAway).catchError((_) {});
+    _channel = null;
+  }
+
+  /// App-lifecycle awareness: drop the socket while backgrounded (saves
+  /// battery, avoids stale-socket churn) and reconnect on resume. Codes in
+  /// `_subscribed` are intentionally left untouched while backgrounded so
+  /// `_connect()`'s existing re-subscribe-on-reconnect path restores them.
+  void _onLifecycleStateChange(AppLifecycleState state) {
+    if (_disposed) return;
+    switch (state) {
+      case AppLifecycleState.paused:
+      case AppLifecycleState.detached:
+        _reconnectTimer?.cancel();
+        _teardownSocket();
+        break;
+      case AppLifecycleState.resumed:
+        _reconnectTimer?.cancel();
+        _connect(); // no-op if already connected (see guard in _connect)
+        break;
+      default:
+        break;
+    }
+  }
+
   void _dispose() {
     _disposed = true;
     _reconnectTimer?.cancel();
+    _lifecycleListener.dispose();
     _sub?.cancel();
     _channel?.sink.close(ws_status.normalClosure).catchError((_) {});
     _alertController.close();
