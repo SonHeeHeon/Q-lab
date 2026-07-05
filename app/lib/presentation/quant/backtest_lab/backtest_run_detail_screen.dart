@@ -13,7 +13,6 @@ import '../../../data/api/backtest_api.dart';
 import 'backtest_lab_controller.dart';
 
 final _date = DateFormat('yyyy-MM-dd');
-final _krw = NumberFormat('#,##0');
 
 class BacktestRunDetailScreen extends ConsumerWidget {
   const BacktestRunDetailScreen({super.key, required this.runId});
