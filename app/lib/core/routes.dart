@@ -23,6 +23,7 @@ import 'package:go_router/go_router.dart';
 import '../presentation/alerts/alerts_screen.dart';
 import '../presentation/heatmap/heatmap_screen.dart';
 import '../presentation/home/home_screen.dart';
+import '../presentation/performance/performance_screen.dart';
 import '../presentation/portfolio/portfolio_screen.dart';
 import '../presentation/principles/principles_screen.dart';
 import '../presentation/quant/backtest_lab/backtest_lab_screen.dart';
@@ -52,6 +53,7 @@ const navDestinations = <NavDestination>[
   NavDestination(path: '/alerts', label: '알림·자동매매', icon: Icons.notifications_active_outlined),
   NavDestination(path: '/heatmap', label: '히트맵', icon: Icons.grid_view_outlined),
   NavDestination(path: '/quant', label: '퀀트', icon: Icons.analytics_outlined),
+  NavDestination(path: '/performance', label: '성과분석', icon: Icons.show_chart),
   NavDestination(path: '/principles', label: '투자원칙', icon: Icons.lightbulb_outline),
   NavDestination(path: '/settings', label: '설정', icon: Icons.settings_outlined),
 ];
@@ -100,6 +102,7 @@ final routerProvider = Provider<GoRouter>((ref) {
               GoRoute(path: 'builder', builder: (_, __) => const BuilderScreen()),
             ],
           ),
+          GoRoute(path: '/performance', builder: (_, __) => const PerformanceScreen()),
           GoRoute(path: '/principles', builder: (_, __) => const PrinciplesScreen()),
           GoRoute(path: '/settings', builder: (_, __) => const SettingsScreen()),
         ],
