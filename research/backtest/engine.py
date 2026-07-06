@@ -27,7 +27,17 @@ from research.factors.volume import calculate_trading_days_30d, calculate_volume
 from research.universe.kosdaq150 import KOSDAQ150_CODES_FILE
 from research.universe.kospi200 import DEFAULT_CODES_FILE
 from shared.db.session import research_db_path
-from shared.domain.strategy import FactorWeight, FilterRule, StrategyDefinition
+from research.backtest.composite import (
+    GroupFactorSpec,
+    GroupSpec,
+    composite_score,
+)
+from shared.domain.strategy import (
+    FactorGroup,
+    FactorWeight,
+    FilterRule,
+    StrategyDefinition,
+)
 
 INITIAL_NAV = 100_000_000.0
 INVESTABLE_NAV_RATIO = 0.995
@@ -103,6 +113,10 @@ def run_backtest(
                 as_of=current_day,
                 db_path=path,
                 warnings=warnings,
+                groups=strategy.groups,
+                min_groups=strategy.min_groups,
+                winsor_pct=strategy.winsor_pct,
+                clip_z=strategy.clip_z,
             )
             scored = apply_filters(
                 scored,
@@ -218,8 +232,29 @@ def score_stocks(
     as_of: Date,
     db_path: Path | None = None,
     warnings: list[str] | None = None,
+    groups: list[FactorGroup] | None = None,
+    min_groups: int = 5,
+    winsor_pct: float = 0.01,
+    clip_z: float = 3.0,
 ) -> pd.DataFrame:
-    """Score stocks with point-in-time factor values."""
+    """Score stocks with point-in-time factor values.
+
+    When ``groups`` is given, the qlab_alpha_v2 grouped composite (robust
+    preprocessing + coverage penalty) is used; otherwise the flat weighted-sum
+    scorer runs exactly as before.
+    """
+
+    if groups:
+        return _score_stocks_grouped(
+            codes,
+            groups,
+            as_of=as_of,
+            db_path=db_path,
+            warnings=warnings,
+            min_groups=min_groups,
+            winsor_pct=winsor_pct,
+            clip_z=clip_z,
+        )
 
     normalized_codes = normalize_codes(codes)
     frame = pd.DataFrame(index=pd.Index(normalized_codes, name="code"))
@@ -249,6 +284,63 @@ def score_stocks(
     else:
         frame["score"] = frame[score_columns].sum(axis=1, min_count=1)
 
+    frame = frame.dropna(subset=["score"])
+    return frame.sort_values("score", ascending=False)
+
+
+def _score_stocks_grouped(
+    codes: list[str],
+    groups: list[FactorGroup],
+    *,
+    as_of: Date,
+    db_path: Path | None,
+    warnings: list[str] | None,
+    min_groups: int,
+    winsor_pct: float,
+    clip_z: float,
+) -> pd.DataFrame:
+    """qlab_alpha_v2 composite: fetch every group factor once, then combine."""
+
+    normalized_codes = normalize_codes(codes)
+    frame = pd.DataFrame(index=pd.Index(normalized_codes, name="code"))
+
+    seen: set[str] = set()
+    for group in groups:
+        for member in group.factors:
+            factor_name = member.factor.upper()
+            if factor_name in seen:
+                continue
+            seen.add(factor_name)
+            raw = _factor_series(
+                factor_name,
+                normalized_codes,
+                as_of=as_of,
+                db_path=db_path,
+                warnings=warnings,
+            )
+            if raw.empty:
+                _warn(warnings, f"{factor_name} returned no values on {as_of}.")
+                continue
+            frame[factor_name] = raw.reindex(frame.index)
+
+    group_specs = tuple(
+        GroupSpec(
+            name=group.name,
+            weight=group.weight,
+            factors=tuple(
+                GroupFactorSpec(member.factor.upper(), member.higher_is_better)
+                for member in group.factors
+            ),
+        )
+        for group in groups
+    )
+    frame["score"] = composite_score(
+        frame,
+        group_specs,
+        min_groups=min_groups,
+        winsor_pct=winsor_pct,
+        clip_z=clip_z,
+    )
     frame = frame.dropna(subset=["score"])
     return frame.sort_values("score", ascending=False)
 
