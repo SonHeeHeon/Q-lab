@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from backend.app.core.config import settings
 from backend.app.schemas.portfolio import OrderRequest, OrderType
+from backend.app.services.orders.guard import OrderBlocked, guard_order
 from backend.app.services.brokers.base import BrokerAccountRef
 from backend.app.services.kis.rest_client import KISRestClient
 from backend.app.services.toss.rest_client import TossRestClient
@@ -239,6 +240,23 @@ async def _maybe_place_alert_order(
         )
         return {
             "mock": True,
+            "broker": broker.value,
+            "direction": direction.value,
+            "symbol": request.stock_code,
+            "quantity": quantity,
+        }
+
+    reference_price = (
+        Decimal(str(alert.last_price)) if alert.last_price is not None else None
+    )
+    try:
+        guard_order(request, reference_price=reference_price)
+    except OrderBlocked as exc:
+        logger.warning(
+            "alert order blocked by safety gateway alert_id=%s: %s", alert.id, exc
+        )
+        return {
+            "blocked": str(exc),
             "broker": broker.value,
             "direction": direction.value,
             "symbol": request.stock_code,

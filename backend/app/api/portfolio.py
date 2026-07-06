@@ -44,6 +44,7 @@ from backend.app.services.market_data.names import lookup_stock_names
 from backend.app.services.market_data.quotes import fetch_current_quotes
 from shared.db.models import Account, Setting, Trade
 from shared.db.session import get_service_session
+from backend.app.services.orders.guard import OrderBlocked, guard_order
 from shared.domain.account import AccountType
 from shared.domain.account import BrokerType
 
@@ -209,12 +210,15 @@ async def place_order(
     try:
         if request.broker is BrokerType.KIS and not request.stock_code.isdigit():
             request.broker = BrokerType.TOSS
+        guard_order(request)
         if request.broker is BrokerType.TOSS:
             rows = await _settings_map(session)
             order = await TossRestClient.from_settings_map(rows).place_order(request)
         else:
             request.stock_code = request.stock_code.zfill(6)
             order = await kis_client.place_order(request)
+    except OrderBlocked as exc:
+        return _blocked_response(str(exc))
     except KISRestError as exc:
         return _error_response("KIS_ORDER_FAILED", str(exc), exc)
     except TossRestError as exc:
@@ -310,6 +314,17 @@ async def _ensure_account_row(
 async def _settings_map(session: AsyncSession) -> dict[str, str]:
     result = await session.execute(select(Setting))
     return {row.key: row.value for row in result.scalars()}
+
+
+def _blocked_response(message: str) -> JSONResponse:
+    envelope = ApiEnvelope(
+        data=None,
+        error=ApiError(code="ORDER_BLOCKED", message=message, details=None),
+    )
+    return JSONResponse(
+        status_code=status.HTTP_403_FORBIDDEN,
+        content=envelope.model_dump(mode="json"),
+    )
 
 
 def _error_response(code: str, message: str, exc: KISRestError | TossRestError) -> JSONResponse:
