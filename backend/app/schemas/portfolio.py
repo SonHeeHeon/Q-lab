@@ -35,6 +35,7 @@ class OrderRequest(BaseModel):
     broker: BrokerType = BrokerType.KIS
     account_type: AccountType = AccountType.PAPER
     account_id: str | None = None
+    client_order_id: str | None = None
     stock_code: str = Field(min_length=1, max_length=20)
     direction: TradeDirection
     quantity: int = Field(gt=0)

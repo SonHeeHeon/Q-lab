@@ -207,6 +207,14 @@ async def place_order(
     kis_client: KISRestClient = Depends(get_kis_rest_client),
     session: AsyncSession = Depends(get_service_session),
 ) -> OrderEnvelope | JSONResponse:
+    if request.client_order_id:
+        existing = await _find_trade_by_client_order_id(
+            session, request.client_order_id
+        )
+        if existing is not None:
+            # Idempotent replay: a retried submission with the same key must not
+            # place a second real order.
+            return _idempotent_response(existing.id)
     try:
         if request.broker is BrokerType.KIS and not request.stock_code.isdigit():
             request.broker = BrokerType.TOSS
@@ -256,6 +264,7 @@ async def _persist_trade_skeleton(
             price=order.price or Decimal("0"),
             executed_at=order.accepted_at,
             kis_order_no=order.kis_order_no or order.broker_order_no,
+            client_order_id=request.client_order_id,
             status="PENDING",
             submitted_at=order.accepted_at,
             filled_quantity=0,
@@ -314,6 +323,26 @@ async def _ensure_account_row(
 async def _settings_map(session: AsyncSession) -> dict[str, str]:
     result = await session.execute(select(Setting))
     return {row.key: row.value for row in result.scalars()}
+
+
+async def _find_trade_by_client_order_id(
+    session: AsyncSession,
+    client_order_id: str,
+) -> Trade | None:
+    result = await session.execute(
+        select(Trade).where(Trade.client_order_id == client_order_id)
+    )
+    return result.scalars().first()
+
+
+def _idempotent_response(trade_id: int) -> JSONResponse:
+    return JSONResponse(
+        status_code=200,
+        content={
+            "data": {"idempotent_replay": True, "trade_id": trade_id},
+            "error": None,
+        },
+    )
 
 
 def _blocked_response(message: str) -> JSONResponse:

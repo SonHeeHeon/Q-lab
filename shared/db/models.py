@@ -59,6 +59,7 @@ class Trade(ServiceBase):
     price: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
     executed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     kis_order_no: Mapped[str | None] = mapped_column(Text)
+    client_order_id: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(
         Text, nullable=False, server_default=text("'PENDING'")
     )
@@ -373,6 +374,7 @@ class MarketIndex(ResearchBase):
 Index("idx_trades_account_executed", Trade.account_type, Trade.executed_at.desc())
 Index("idx_trades_stock", Trade.stock_code)
 Index("idx_trades_order_no", Trade.kis_order_no)
+Index("idx_trades_client_order_id", Trade.client_order_id, unique=True)
 Index("idx_trades_status_checked", Trade.status, Trade.last_checked_at)
 Index("idx_watchlist_stock", WatchlistEntry.stock_code)
 Index("idx_alerts_triggered", Alert.triggered_at.desc())
