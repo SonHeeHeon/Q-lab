@@ -10,7 +10,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from backend.app.core.config import settings
 from backend.app.schemas.portfolio import OrderRequest, OrderType
@@ -147,6 +147,13 @@ async def evaluate_alerts_once() -> AlertEvaluationSummary:
                     summary.details.append(detail)
                     continue
 
+                claimed = await _claim_alert(session, alert.id, now)
+                if not claimed:
+                    # Another evaluation (background loop vs manual /evaluate)
+                    # already triggered this alert — do not double-fire the order.
+                    detail["status"] = "already_triggered"
+                    summary.details.append(detail)
+                    continue
                 alert.triggered_at = now
                 summary.triggered += 1
                 detail["status"] = "triggered"
@@ -174,6 +181,25 @@ async def evaluate_alerts_once() -> AlertEvaluationSummary:
 
     summary.finished_at = datetime.now().astimezone()
     return summary
+
+
+async def _claim_alert(session, alert_id: int, now: datetime) -> bool:
+    """Atomically claim an alert for triggering.
+
+    Conditional UPDATE (``WHERE triggered_at IS NULL``) so that if two
+    evaluations run concurrently — the background monitor loop and a manual
+    ``POST /api/alerts/evaluate`` — only one wins the claim and places the
+    order. Commits immediately to make the claim durable and visible to the
+    other transaction (SQLite serialises the write). Returns True for the winner.
+    """
+    result = await session.execute(
+        update(Alert)
+        .where(Alert.id == alert_id)
+        .where(Alert.triggered_at.is_(None))
+        .values(triggered_at=now)
+    )
+    await session.commit()
+    return (result.rowcount or 0) == 1
 
 
 async def _fetch_alert_quote(
