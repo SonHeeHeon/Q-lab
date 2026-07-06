@@ -10,6 +10,7 @@ from logging.handlers import TimedRotatingFileHandler
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
+from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -41,9 +42,11 @@ from backend.app.services.kis.order_tracker import OrderTrackerService
 from backend.app.services.kis.risk_manager import PortfolioRiskManager
 from backend.app.services.kis.ws_client import QuoteTick
 from backend.app.services.kis.ws_client import KISWebSocketClient
+from backend.app.services.automation.safety import set_kill_switch
+from backend.app.services.automation.store import load_kill_switch
 from backend.app.ws.quotes import quote_manager, router as quotes_router
 from backend.app.ws.quotes import set_upstream_client
-from shared.db.session import research_engine, service_engine
+from shared.db.session import research_engine, service_engine, service_session
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +54,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _configure_logging()
+    await _restore_kill_switch()
 
     kis_ws_client: KISWebSocketClient | None = None
     batch_scheduler = None
@@ -232,6 +236,37 @@ app.include_router(automation_router)
 app.include_router(trade_journal_router)
 app.include_router(watchlist_router)
 app.include_router(quotes_router)
+
+
+@app.get("/health")
+async def health() -> JSONResponse:
+    """Lightweight liveness/readiness probe (not under /api, no envelope)."""
+    checks: dict[str, str] = {}
+    healthy = True
+    try:
+        async with service_session() as session:
+            await session.execute(text("SELECT 1"))
+        checks["service_db"] = "ok"
+    except Exception as exc:  # pragma: no cover - defensive
+        checks["service_db"] = f"error: {type(exc).__name__}"
+        healthy = False
+    return JSONResponse(
+        status_code=200 if healthy else 503,
+        content={"status": "ok" if healthy else "degraded", "checks": checks},
+    )
+
+
+async def _restore_kill_switch() -> None:
+    """Re-seed the in-memory kill switch from its persisted value on startup."""
+    try:
+        async with service_session() as session:
+            persisted = await load_kill_switch(session)
+        if persisted is not None:
+            enabled, reason = persisted
+            set_kill_switch(enabled, reason=reason)
+            logger.info("restored kill switch from db enabled=%s", enabled)
+    except Exception:
+        logger.exception("failed to restore kill switch from db")
 
 
 async def _reconcile_risk_subscriptions(

@@ -8,8 +8,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
 from backend.app.schemas.portfolio import ApiEnvelope
@@ -18,13 +19,14 @@ from backend.app.services.automation.safety import (
     get_safety_state,
     set_kill_switch,
 )
+from backend.app.services.automation.store import save_kill_switch
 from backend.app.services.kis.market_snapshot import (
     get_current_heatmap_snapshot,
     get_market_session,
 )
 from backend.app.services.llm.client import tokens_used_today
 from shared.domain.account import AccountType
-from shared.db.session import research_db_path
+from shared.db.session import get_service_session, research_db_path
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 automation_router = APIRouter(prefix="/api/automation", tags=["automation"])
@@ -137,8 +139,12 @@ async def get_automation_status() -> ApiEnvelope[AutomationStatusResponse]:
 
 
 @automation_router.post("/kill-switch", response_model=ApiEnvelope[AutomationStatusResponse])
-async def update_kill_switch(payload: KillSwitchRequest) -> ApiEnvelope[AutomationStatusResponse]:
+async def update_kill_switch(
+    payload: KillSwitchRequest,
+    session: AsyncSession = Depends(get_service_session),
+) -> ApiEnvelope[AutomationStatusResponse]:
     state = set_kill_switch(payload.enabled, reason=payload.reason)
+    await save_kill_switch(session, enabled=payload.enabled, reason=payload.reason)
     return ApiEnvelope(data=_automation_response(state), error=None)
 
 
