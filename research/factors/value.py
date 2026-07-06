@@ -10,6 +10,7 @@ from pathlib import Path
 import pandas as pd
 
 from research.factors.common import normalize_codes, split_korean_and_global, table_exists
+from research.factors.quality import net_income_ttm_series
 from shared.db.session import research_db_path
 
 
@@ -53,38 +54,80 @@ def calculate_value_factors(
     with sqlite3.connect(path) as conn:
         prices = _latest_prices(conn, normalized_codes, as_of)
         financials = _latest_financials(conn, normalized_codes, as_of)
+        ttm = _net_income_ttm(conn, normalized_codes, as_of)
 
     frame = pd.DataFrame(index=normalized_codes)
     frame.index.name = "code"
     frame["price"] = prices
     frame = frame.join(financials)
+    frame["net_income_ttm"] = ttm.reindex(frame.index)
 
-    frame["bps"] = _fill_bps_from_equity(frame)
-    frame["PER"] = _safe_divide(frame["price"], frame["eps"])
+    shares = _share_estimate(frame)
+    frame["bps"] = _fill_bps_from_equity(frame, shares)
+    # PER on a consistent 12-month basis: the latest disclosure's EPS is a
+    # 3-month figure whenever the newest report is an interim, which made the
+    # PER cross-section mix 3-month and 12-month earnings bases (~4x apart).
+    eps_ttm = _safe_divide(frame["net_income_ttm"], shares)
+    eps_basis = eps_ttm.where(eps_ttm.notna(), pd.to_numeric(frame["eps"], errors="coerce"))
+    frame["PER"] = _safe_divide(frame["price"], eps_basis)
     frame["PBR"] = _safe_divide(frame["price"], frame["bps"])
-    frame.loc[frame["eps"] <= 0, "PER"] = pd.NA
-    frame.loc[frame["bps"] <= 0, "PBR"] = pd.NA
+    frame.loc[(eps_basis <= 0).fillna(False), "PER"] = pd.NA
+    frame.loc[(frame["bps"] <= 0).fillna(False), "PBR"] = pd.NA
     return frame[["PER", "PBR"]]
 
 
-def _fill_bps_from_equity(frame: pd.DataFrame) -> pd.Series:
-    """Fill missing BPS as total_equity / shares, shares ≈ net_income / eps.
+def _net_income_ttm(
+    conn: sqlite3.Connection,
+    codes: list[str],
+    as_of: Date,
+) -> pd.Series:
+    korean_codes, global_codes = split_korean_and_global(codes)
+    parts: list[pd.Series] = []
+    if korean_codes and table_exists(conn, "financials"):
+        parts.append(
+            net_income_ttm_series(
+                conn, "financials", "stock_code", korean_codes, as_of,
+                mixed_annual=True,
+            )
+        )
+    if global_codes and table_exists(conn, "financials_us"):
+        parts.append(
+            net_income_ttm_series(
+                conn, "financials_us", "ticker", global_codes, as_of,
+                mixed_annual=False,
+            )
+        )
+    if not parts:
+        return pd.Series(dtype="float64")
+    return pd.concat(parts).sort_index()
 
-    DART statements carry no BPS line item, so KR ``financials.bps`` is NULL and
-    PBR would silently drop out of every composite score. Both EPS and net income
-    come from the same point-in-time disclosure, so ``net_income / eps``
-    approximates the (weighted-average) share count without look-ahead. Applied
-    only where BPS is missing and the estimate is well-defined (eps and
-    net_income share a sign → positive share count, positive equity).
+
+def _share_estimate(frame: pd.DataFrame) -> pd.Series:
+    """Share count ≈ net_income / eps from the same point-in-time disclosure.
+
+    Both figures come from one report, so the ratio is the (weighted-average)
+    share count without look-ahead — the basis for both the BPS derivation and
+    the TTM-EPS scaling. Invalid (sign-mismatched or non-positive) estimates
+    become NA.
     """
-    bps = pd.to_numeric(frame.get("bps"), errors="coerce")
     eps = pd.to_numeric(frame.get("eps"), errors="coerce")
     net_income = pd.to_numeric(frame.get("net_income"), errors="coerce")
-    equity = pd.to_numeric(frame.get("total_equity"), errors="coerce")
-
     shares = _safe_divide(net_income, eps)
+    return shares.where((shares > 0).fillna(False))
+
+
+def _fill_bps_from_equity(frame: pd.DataFrame, shares: pd.Series) -> pd.Series:
+    """Fill missing BPS as total_equity / shares.
+
+    DART statements carry no BPS line item, so KR ``financials.bps`` is NULL and
+    PBR would silently drop out of every composite score. Applied only where
+    BPS is missing and the estimate is well-defined (valid share count,
+    positive equity).
+    """
+    bps = pd.to_numeric(frame.get("bps"), errors="coerce")
+    equity = pd.to_numeric(frame.get("total_equity"), errors="coerce")
     estimate = _safe_divide(equity, shares)
-    valid = shares.notna() & (shares > 0) & equity.notna() & (equity > 0)
+    valid = shares.notna() & equity.notna() & (equity > 0)
     return bps.where(bps.notna(), estimate.where(valid))
 
 
