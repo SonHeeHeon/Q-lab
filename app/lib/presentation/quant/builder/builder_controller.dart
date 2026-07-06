@@ -13,17 +13,19 @@ import '../backtest_lab/backtest_lab_controller.dart';
 
 /// Curated factor catalog. Backend treats factor as a plain string so
 /// this list is the only client-side source of truth for the dropdown.
+/// 엔진(_factor_series)이 실제 계산하는 팩터만 노출 — 미구현 팩터는 조용히
+/// 빈 값이 되어 방정식을 오염시킨다 (PSR/DIVIDEND_YIELD 제거 사유).
 const kFactorCatalog = <FactorMeta>[
   FactorMeta('MOMENTUM_1M', '1M 모멘텀', '최근 1개월 수익률'),
   FactorMeta('MOMENTUM_3M', '3M 모멘텀', '최근 3개월 수익률'),
   FactorMeta('MOMENTUM_6M', '6M 모멘텀', '최근 6개월 수익률'),
   FactorMeta('MOMENTUM_12M', '12M 모멘텀', '최근 12개월 수익률'),
-  FactorMeta('PER', 'PER', '주가수익비율 (역수 정렬)'),
+  FactorMeta('PER', 'PER', '주가수익비율 · TTM 기준 (역수 정렬)'),
   FactorMeta('PBR', 'PBR', '주가순자산비율 (역수 정렬)'),
-  FactorMeta('PSR', 'PSR', '주가매출액비율 (역수 정렬)'),
-  FactorMeta('ROE', 'ROE', '자기자본수익률'),
-  FactorMeta('ROA', 'ROA', '총자산수익률'),
-  FactorMeta('DIVIDEND_YIELD', '배당수익률', '연간 배당 ÷ 현재가'),
+  FactorMeta('ROE', 'ROE', '자기자본수익률 · TTM 기준'),
+  FactorMeta('ROA', 'ROA', '총자산수익률 · TTM 기준'),
+  FactorMeta('FOREIGN_NET_20D', '외국인 수급', '20일 누적 외국인 순매수 ÷ 시가총액'),
+  FactorMeta('INST_NET_20D', '기관 수급', '20일 누적 기관 순매수 ÷ 시가총액'),
 ];
 
 class FactorMeta {
@@ -33,13 +35,14 @@ class FactorMeta {
   final String hint;
 }
 
+// 엔진이 지원하는 필터 필드만 (ADV_30D/DEBT_RATIO는 미구현이라 제거,
+// TURNOVER_PROXY = 최근일 거래대금 유동성 필터).
 const kFilterFields = <String>[
   'TRADING_DAYS_30D',
   'MARKET_CAP',
-  'ADV_30D',
+  'TURNOVER_PROXY',
   'PER',
   'PBR',
-  'DEBT_RATIO',
 ];
 
 class BuilderState {
