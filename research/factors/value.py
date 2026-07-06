@@ -59,11 +59,33 @@ def calculate_value_factors(
     frame["price"] = prices
     frame = frame.join(financials)
 
+    frame["bps"] = _fill_bps_from_equity(frame)
     frame["PER"] = _safe_divide(frame["price"], frame["eps"])
     frame["PBR"] = _safe_divide(frame["price"], frame["bps"])
     frame.loc[frame["eps"] <= 0, "PER"] = pd.NA
     frame.loc[frame["bps"] <= 0, "PBR"] = pd.NA
     return frame[["PER", "PBR"]]
+
+
+def _fill_bps_from_equity(frame: pd.DataFrame) -> pd.Series:
+    """Fill missing BPS as total_equity / shares, shares ≈ net_income / eps.
+
+    DART statements carry no BPS line item, so KR ``financials.bps`` is NULL and
+    PBR would silently drop out of every composite score. Both EPS and net income
+    come from the same point-in-time disclosure, so ``net_income / eps``
+    approximates the (weighted-average) share count without look-ahead. Applied
+    only where BPS is missing and the estimate is well-defined (eps and
+    net_income share a sign → positive share count, positive equity).
+    """
+    bps = pd.to_numeric(frame.get("bps"), errors="coerce")
+    eps = pd.to_numeric(frame.get("eps"), errors="coerce")
+    net_income = pd.to_numeric(frame.get("net_income"), errors="coerce")
+    equity = pd.to_numeric(frame.get("total_equity"), errors="coerce")
+
+    shares = _safe_divide(net_income, eps)
+    estimate = _safe_divide(equity, shares)
+    valid = shares.notna() & (shares > 0) & equity.notna() & (equity > 0)
+    return bps.where(bps.notna(), estimate.where(valid))
 
 
 def _latest_prices(
@@ -128,8 +150,14 @@ def _latest_financials(
             _latest_financials_from_table(conn, "financials_us", "ticker", global_codes, as_of)
         )
     if not frames:
-        return pd.DataFrame(index=pd.Index([], name="stock_code"), columns=["eps", "bps"])
+        return pd.DataFrame(
+            index=pd.Index([], name="stock_code"),
+            columns=_FINANCIAL_COLUMNS,
+        )
     return pd.concat(frames).sort_index()
+
+
+_FINANCIAL_COLUMNS = ["eps", "bps", "total_equity", "net_income"]
 
 
 def _latest_financials_from_table(
@@ -140,13 +168,19 @@ def _latest_financials_from_table(
     as_of: Date,
 ) -> pd.DataFrame:
     placeholders = ",".join("?" for _ in codes)
+    # The US table is created ad-hoc by the download script, so guard against
+    # missing columns by selecting NULL for any the table does not have.
+    available = _table_columns(conn, table_name)
+    selects = ",\n                ".join(
+        column if column in available else f"NULL AS {column}"
+        for column in _FINANCIAL_COLUMNS
+    )
     sql = f"""
-        SELECT stock_code, eps, bps
+        SELECT stock_code, {", ".join(_FINANCIAL_COLUMNS)}
         FROM (
             SELECT
                 {code_column} AS stock_code,
-                eps,
-                bps,
+                {selects},
                 ROW_NUMBER() OVER (
                     PARTITION BY {code_column}
                     ORDER BY disclosed_at DESC, fiscal_period DESC, id DESC
@@ -159,9 +193,17 @@ def _latest_financials_from_table(
     """
     rows = pd.read_sql_query(sql, conn, params=[*codes, as_of.isoformat()])
     if rows.empty:
-        return pd.DataFrame(index=pd.Index([], name="stock_code"), columns=["eps", "bps"])
+        return pd.DataFrame(
+            index=pd.Index([], name="stock_code"),
+            columns=_FINANCIAL_COLUMNS,
+        )
     frame = rows.set_index("stock_code")
-    return frame[["eps", "bps"]].astype(float)
+    return frame[_FINANCIAL_COLUMNS].astype(float)
+
+
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {str(row[1]) for row in rows}
 
 
 def _safe_divide(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
