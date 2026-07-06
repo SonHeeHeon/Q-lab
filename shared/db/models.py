@@ -371,6 +371,22 @@ class MarketIndex(ResearchBase):
     close: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
 
 
+class InvestorFlowDaily(ResearchBase):
+    """Daily net-purchase trading value by investor type (pykrx 투자자별 순매수).
+
+    Values are KRW net purchase amounts (buy − sell); positive = net buying.
+    Feeds the Flow factor group (e.g. FOREIGN_NET_20D) of the composite score.
+    """
+
+    __tablename__ = "investor_flows_daily"
+
+    stock_code: Mapped[str] = mapped_column(Text, primary_key=True)
+    date: Mapped[date] = mapped_column(Date, primary_key=True)
+    foreign_net: Mapped[Decimal | None] = mapped_column(Numeric)
+    inst_net: Mapped[Decimal | None] = mapped_column(Numeric)
+    indiv_net: Mapped[Decimal | None] = mapped_column(Numeric)
+
+
 class MarketCapDaily(ResearchBase):
     """True daily market capitalization (pykrx 시가총액/상장주식수).
 
@@ -408,5 +424,6 @@ Index("idx_stocks_market", Stock.market)
 Index("idx_stocks_delisted", Stock.is_delisted)
 Index("idx_prices_date", PriceDaily.date)
 Index("idx_market_caps_date", MarketCapDaily.date)
+Index("idx_investor_flows_date", InvestorFlowDaily.date)
 Index("idx_fin_stock_disclosed", Financial.stock_code, Financial.disclosed_at)
 Index("idx_factor_date", FactorValue.date, FactorValue.factor_name)

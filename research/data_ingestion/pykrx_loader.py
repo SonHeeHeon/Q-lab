@@ -17,7 +17,13 @@ from sqlalchemy.dialects.sqlite import insert
 
 os.environ.setdefault("MPLCONFIGDIR", str(Path("/private/tmp/qlab-mplconfig")))
 
-from shared.db.models import MarketCapDaily, MarketIndex, PriceDaily, Stock
+from shared.db.models import (
+    InvestorFlowDaily,
+    MarketCapDaily,
+    MarketIndex,
+    PriceDaily,
+    Stock,
+)
 from shared.db.session import research_session
 
 MARKET_INDEX_TICKERS = {
@@ -240,6 +246,81 @@ async def update_market_caps(
     return LoadResult(
         name="market_caps", requested=total_rows, inserted_or_ignored=total_rows
     )
+
+
+async def update_investor_flows(
+    codes: Iterable[str],
+    *,
+    start: date,
+    end: date,
+    concurrency: int = 4,
+    sleep_seconds: float = 0.15,
+) -> LoadResult:
+    """Download daily net-purchase value by investor type (투자자별 순매수).
+
+    Source: pykrx get_market_trading_value_by_date per ticker — columns are
+    net purchase trading values (KRW, buy − sell). Feeds the Flow factor group
+    (FOREIGN_NET_20D / INST_NET_20D). Requires KRX data-portal login
+    (KRX_ID / KRX_PW in the environment) like the other pykrx endpoints.
+    """
+
+    semaphore = asyncio.Semaphore(concurrency)
+    total_rows = 0
+
+    async def load_one(code: str) -> int:
+        stock = _pykrx_stock()
+        async with semaphore:
+            try:
+                df = await asyncio.to_thread(
+                    stock.get_market_trading_value_by_date,
+                    _to_yyyymmdd(start),
+                    _to_yyyymmdd(end),
+                    code,
+                )
+            except Exception as exc:
+                print(f"[phase2:warn] pykrx investor flows failed for {code}: {exc}")
+                return 0
+            await asyncio.sleep(sleep_seconds)
+        rows = _investor_flow_rows_from_frame(code, df)
+        await _insert_ignore(InvestorFlowDaily, rows)
+        return len(rows)
+
+    for rows_count in await asyncio.gather(
+        *(load_one(str(code).zfill(6)) for code in codes)
+    ):
+        total_rows += rows_count
+
+    return LoadResult(
+        name="investor_flows_daily",
+        requested=total_rows,
+        inserted_or_ignored=total_rows,
+    )
+
+
+_FLOW_COLUMN_ALIASES = {
+    "foreign_net": ("외국인합계", "외국인"),
+    "inst_net": ("기관합계", "기관"),
+    "indiv_net": ("개인",),
+}
+
+
+def _investor_flow_rows_from_frame(code: str, df: pd.DataFrame) -> list[dict[str, Any]]:
+    if df is None or df.empty:
+        return []
+    rows: list[dict[str, Any]] = []
+    for idx, row in df.iterrows():
+        values: dict[str, Decimal | None] = {}
+        for field, aliases in _FLOW_COLUMN_ALIASES.items():
+            raw = next(
+                (row[alias] for alias in aliases if alias in row.index), None
+            )
+            values[field] = (
+                Decimal(str(int(raw))) if raw is not None and pd.notna(raw) else None
+            )
+        if all(value is None for value in values.values()):
+            continue
+        rows.append({"stock_code": code, "date": _to_date(idx), **values})
+    return rows
 
 
 def _market_cap_rows_from_frame(code: str, df: pd.DataFrame) -> list[dict[str, Any]]:

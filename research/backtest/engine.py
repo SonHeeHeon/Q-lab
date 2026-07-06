@@ -20,6 +20,7 @@ from research.factors.common import (
     split_korean_and_global,
     table_exists,
 )
+from research.factors.flows import calculate_foreign_net_20d, calculate_inst_net_20d
 from research.factors.quality import calculate_roa, calculate_roe
 from research.factors.value import calculate_pbr, calculate_per
 from research.factors.volume import calculate_trading_days_30d, calculate_volume_spike
@@ -312,6 +313,10 @@ def _factor_series(
             )
         if factor_name == "TRADING_DAYS_30D":
             return calculate_trading_days_30d(codes, as_of=as_of, db_path=db_path)
+        if factor_name == "FOREIGN_NET_20D":
+            return calculate_foreign_net_20d(codes, as_of=as_of, db_path=db_path)
+        if factor_name == "INST_NET_20D":
+            return calculate_inst_net_20d(codes, as_of=as_of, db_path=db_path)
         if factor_name == "VOLUME_SPIKE":
             return calculate_volume_spike(codes, as_of=as_of, db_path=db_path)
         if factor_name == "MARKET_CAP":
