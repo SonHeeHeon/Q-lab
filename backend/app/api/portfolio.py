@@ -44,7 +44,11 @@ from backend.app.services.market_data.names import lookup_stock_names
 from backend.app.services.market_data.quotes import fetch_current_quotes
 from shared.db.models import Account, Setting, Trade
 from shared.db.session import get_service_session
-from backend.app.services.orders.guard import OrderBlocked, guard_order
+from backend.app.services.orders.guard import (
+    OrderBlocked,
+    assert_daily_loss_ok,
+    guard_order,
+)
 from shared.domain.account import AccountType
 from shared.domain.account import BrokerType
 
@@ -219,6 +223,12 @@ async def place_order(
         if request.broker is BrokerType.KIS and not request.stock_code.isdigit():
             request.broker = BrokerType.TOSS
         guard_order(request)
+        await assert_daily_loss_ok(
+            session,
+            broker=request.broker,
+            account_type=request.account_type,
+            direction=request.direction,
+        )
         if request.broker is BrokerType.TOSS:
             rows = await _settings_map(session)
             order = await TossRestClient.from_settings_map(rows).place_order(request)

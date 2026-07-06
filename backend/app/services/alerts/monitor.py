@@ -11,10 +11,15 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
 from backend.app.schemas.portfolio import OrderRequest, OrderType
-from backend.app.services.orders.guard import OrderBlocked, guard_order
+from backend.app.services.orders.guard import (
+    OrderBlocked,
+    assert_daily_loss_ok,
+    guard_order,
+)
 from backend.app.services.brokers.base import BrokerAccountRef
 from backend.app.services.kis.rest_client import KISRestClient
 from backend.app.services.toss.rest_client import TossRestClient
@@ -162,6 +167,7 @@ async def evaluate_alerts_once() -> AlertEvaluationSummary:
                     alert,
                     kis_client,
                     toss_client,
+                    session=session,
                 )
                 if order_payload is not None:
                     summary.ordered += 1
@@ -233,6 +239,8 @@ async def _maybe_place_alert_order(
     alert: Alert,
     kis_client: KISRestClient,
     toss_client: TossRestClient,
+    *,
+    session: AsyncSession | None = None,
 ) -> dict[str, Any] | None:
     action = str(alert.action or "NOTIFY").upper()
     if action not in {"BUY", "SELL"}:
@@ -277,6 +285,13 @@ async def _maybe_place_alert_order(
     )
     try:
         guard_order(request, reference_price=reference_price)
+        if session is not None:
+            await assert_daily_loss_ok(
+                session,
+                broker=broker,
+                account_type=request.account_type,
+                direction=direction,
+            )
     except OrderBlocked as exc:
         logger.warning(
             "alert order blocked by safety gateway alert_id=%s: %s", alert.id, exc

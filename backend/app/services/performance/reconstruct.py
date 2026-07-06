@@ -12,7 +12,7 @@ only until real broker NAV snapshots (``portfolio_snapshots``) accumulate.
 from __future__ import annotations
 
 from bisect import bisect_right
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date as Date
@@ -144,3 +144,33 @@ def total_return(curve: Sequence[tuple[Date, float]]) -> float:
     first = curve[0][1]
     last = curve[-1][1]
     return (last / first - 1.0) if first > 0 else 0.0
+
+
+def realized_pnl_on(trades: Sequence[FilledTrade], day: Date) -> float:
+    """FIFO realized PnL (fees/taxes included) from sells filled on ``day``.
+
+    Walks the full fill history to build cost-basis lots, then sums the realized
+    profit/loss of every sell executed on ``day``. Sells without a matching lot
+    (position opened before trade history begins) are skipped rather than
+    guessed. Mirrors the FIFO matching in research.backtest.metrics.
+    """
+    lots: dict[str, deque[tuple[int, float]]] = defaultdict(deque)
+    realized = 0.0
+    for trade in sorted(trades, key=lambda item: item.date):
+        if trade.qty <= 0:
+            continue
+        if trade.side.upper() == "BUY":
+            cost_per_share = -trade.cash_flow / trade.qty
+            lots[trade.code].append((trade.qty, cost_per_share))
+            continue
+        remaining = trade.qty
+        proceeds_per_share = trade.cash_flow / trade.qty
+        while remaining > 0 and lots[trade.code]:
+            lot_qty, cost_per_share = lots[trade.code].popleft()
+            matched = min(remaining, lot_qty)
+            if trade.date == day:
+                realized += (proceeds_per_share - cost_per_share) * matched
+            remaining -= matched
+            if lot_qty > matched:
+                lots[trade.code].appendleft((lot_qty - matched, cost_per_share))
+    return realized

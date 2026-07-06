@@ -13,11 +13,20 @@ direct ``assert_order_allowed`` calls (already safe).
 
 from __future__ import annotations
 
+import logging
+from datetime import date as Date
 from decimal import Decimal
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from backend.app.schemas.portfolio import OrderRequest
-from backend.app.services.automation.safety import assert_order_allowed
+from backend.app.services.automation.safety import assert_order_allowed, get_safety_state
+from shared.db.models import PortfolioSnapshot
 from shared.domain.account import AccountType, BrokerType
+from shared.domain.trade import TradeDirection
+
+logger = logging.getLogger(__name__)
 
 
 class OrderBlocked(Exception):
@@ -74,3 +83,65 @@ def guard_order(
         assert_order_allowed(estimated_notional=notional, live_mode=live_mode)
     except RuntimeError as exc:
         raise OrderBlocked(str(exc)) from exc
+
+
+async def assert_daily_loss_ok(
+    session: AsyncSession,
+    *,
+    broker: BrokerType,
+    account_type: AccountType,
+    direction: TradeDirection,
+) -> None:
+    """Enforce AUTOMATION_MAX_DAILY_LOSS_PCT: block new BUYs after the limit.
+
+    Today's FIFO realized PnL (from filled trades) is compared against the most
+    recent broker NAV snapshot. Once the realized loss breaches the configured
+    percentage, further BUY orders are blocked for the day; SELLs stay allowed
+    so positions can still be de-risked. Skipped when no NAV snapshot exists
+    yet (the reference base would be a guess) or for non-live (KIS PAPER)
+    orders. This limit was previously configured but enforced nowhere.
+    """
+    if direction is not TradeDirection.BUY:
+        return
+    if not resolve_live_mode(broker, account_type):
+        return
+
+    # Imported here: performance.service imports broker-facing modules that the
+    # guard's synchronous callers (tests included) should not pay for.
+    from backend.app.services.performance.service import _load_filled_trades
+    from backend.app.services.performance.reconstruct import realized_pnl_on
+
+    today = Date.today()
+    reference_nav = await _latest_snapshot_nav(session, account_type, today)
+    if reference_nav is None or reference_nav <= 0:
+        logger.debug(
+            "daily-loss check skipped (no NAV snapshot) account=%s",
+            account_type.value,
+        )
+        return
+
+    fills = await _load_filled_trades(session, account_type)
+    pnl_today = realized_pnl_on(fills, today)
+    loss_pct = pnl_today / reference_nav * 100.0
+    limit_pct = float(get_safety_state().max_daily_loss_pct)
+    if loss_pct <= limit_pct:
+        raise OrderBlocked(
+            "Daily realized loss limit reached: "
+            f"{loss_pct:.2f}% <= {limit_pct:.2f}% (new BUY orders blocked today)"
+        )
+
+
+async def _latest_snapshot_nav(
+    session: AsyncSession,
+    account_type: AccountType,
+    as_of: Date,
+) -> float | None:
+    result = await session.execute(
+        select(PortfolioSnapshot.nav)
+        .where(PortfolioSnapshot.account_type == account_type.value)
+        .where(PortfolioSnapshot.date <= as_of)
+        .order_by(PortfolioSnapshot.date.desc())
+        .limit(1)
+    )
+    nav = result.scalar_one_or_none()
+    return float(nav) if nav is not None else None
