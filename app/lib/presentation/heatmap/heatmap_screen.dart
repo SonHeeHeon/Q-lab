@@ -7,6 +7,7 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
 import '../../data/api/heatmap_api.dart';
@@ -298,7 +299,7 @@ void _showStockDetailSheet(BuildContext context, HeatmapNode node) {
   showModalBottomSheet(
     context: context,
     showDragHandle: true,
-    builder: (_) {
+    builder: (sheetCtx) {
       final theme = Theme.of(context);
       final mc = node.marketCap;
       final close = node.close;
@@ -339,6 +340,22 @@ void _showStockDetailSheet(BuildContext context, HeatmapNode node) {
             if (mc != null) _KV(label: '시가총액', value: '₩${_krw.format(mc)}'),
             if (vol != null) _KV(label: '거래량', value: _krw.format(vol)),
             if (node.sector != null) _KV(label: '섹터', value: node.sector!),
+            if ((node.stockCode ?? '').isNotEmpty) ...[
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.tonalIcon(
+                  onPressed: () {
+                    Navigator.of(sheetCtx).pop();
+                    context.push(
+                      '/stocks/KR/${Uri.encodeComponent(node.stockCode!)}',
+                    );
+                  },
+                  icon: const Icon(Icons.candlestick_chart_outlined),
+                  label: const Text('종목 상세 보기'),
+                ),
+              ),
+            ],
             const SizedBox(height: 16),
           ],
         ),
