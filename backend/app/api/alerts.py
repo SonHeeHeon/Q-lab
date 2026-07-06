@@ -57,6 +57,19 @@ class AlertCreate(BaseModel):
     def normalize_symbol(cls, value: str | None) -> str | None:
         return _normalize_symbol(value) if value else None
 
+    @field_validator("condition")
+    @classmethod
+    def reject_unsupported_condition(cls, value: str) -> str:
+        # VOLUME_SPIKE has no evaluator (needs a historical volume baseline the
+        # live monitor doesn't fetch), so the alert would error forever. Reject
+        # at creation instead of letting a dead alert accumulate errors.
+        if value == "VOLUME_SPIKE":
+            raise ValueError(
+                "VOLUME_SPIKE alerts are not supported yet. Choose "
+                "PRICE_ABOVE, PRICE_BELOW, or PCT_CHANGE."
+            )
+        return value
+
 
 class AlertPostMortemPatch(BaseModel):
     post_mortem: str = Field(min_length=1)
