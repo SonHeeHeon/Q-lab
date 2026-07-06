@@ -315,14 +315,23 @@ def _factor_series(
         if factor_name == "VOLUME_SPIKE":
             return calculate_volume_spike(codes, as_of=as_of, db_path=db_path)
         if factor_name == "MARKET_CAP":
-            _warn(
-                warnings,
-                "MARKET_CAP currently uses a liquidity proxy unless true "
-                "historical market-cap data is present; prefer TURNOVER_PROXY.",
-            )
-            return _market_cap_proxy(codes, as_of=as_of, db_path=db_path)
+            caps = _true_market_cap(codes, as_of=as_of, db_path=db_path)
+            if caps.empty:
+                # Never substitute the turnover proxy here: with a
+                # "market cap >= 100B" filter the proxy silently keeps only
+                # the ~dozen highest-turnover names of the day (12/193 on
+                # KOSPI200, measured) — a completely different strategy.
+                # Empty series → apply_filters skips the rule with a warning.
+                _warn(
+                    warnings,
+                    "MARKET_CAP data unavailable (market_caps table absent/empty "
+                    "as of this date) — factor empty, filters on it skipped. "
+                    "Ingest via pykrx_loader.update_market_caps; for liquidity "
+                    "filtering use TURNOVER_PROXY.",
+                )
+            return caps
         if factor_name in {"TURNOVER", "TURNOVER_PROXY", "LIQUIDITY"}:
-            return _market_cap_proxy(codes, as_of=as_of, db_path=db_path)
+            return _turnover_proxy(codes, as_of=as_of, db_path=db_path)
     except Exception as exc:
         _warn(warnings, f"Failed to compute {factor_name} on {as_of}: {exc}")
         return pd.Series(dtype="float64")
@@ -331,13 +340,53 @@ def _factor_series(
     return pd.Series(dtype="float64")
 
 
-def _market_cap_proxy(
+def _true_market_cap(
     codes: list[str],
     *,
     as_of: Date,
     db_path: Path | None,
 ) -> pd.Series:
-    """Local size proxy used when true historical market cap is unavailable."""
+    """Point-in-time market cap from the market_caps table (empty if absent)."""
+
+    normalized_codes = normalize_codes(codes)
+    if not normalized_codes:
+        return pd.Series(dtype="float64")
+    path = db_path or research_db_path
+    with sqlite3.connect(path) as conn:
+        if not table_exists(conn, "market_caps"):
+            return pd.Series(dtype="float64")
+        placeholders = ",".join("?" for _ in normalized_codes)
+        sql = f"""
+            SELECT stock_code, market_cap
+            FROM (
+                SELECT
+                    stock_code,
+                    market_cap,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY stock_code
+                        ORDER BY date DESC
+                    ) AS rn
+                FROM market_caps
+                WHERE stock_code IN ({placeholders})
+                  AND date <= ?
+            )
+            WHERE rn = 1
+        """
+        rows = pd.read_sql_query(
+            sql, conn, params=[*normalized_codes, as_of.isoformat()]
+        )
+    if rows.empty:
+        return pd.Series(dtype="float64")
+    return rows.set_index("stock_code")["market_cap"].astype(float)
+
+
+def _turnover_proxy(
+    codes: list[str],
+    *,
+    as_of: Date,
+    db_path: Path | None,
+) -> pd.Series:
+    """Latest-day close×volume turnover (a liquidity measure, NOT market cap)."""
 
     normalized_codes = normalize_codes(codes)
     if not normalized_codes:

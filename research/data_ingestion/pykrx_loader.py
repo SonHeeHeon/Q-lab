@@ -17,7 +17,7 @@ from sqlalchemy.dialects.sqlite import insert
 
 os.environ.setdefault("MPLCONFIGDIR", str(Path("/private/tmp/qlab-mplconfig")))
 
-from shared.db.models import MarketIndex, PriceDaily, Stock
+from shared.db.models import MarketCapDaily, MarketIndex, PriceDaily, Stock
 from shared.db.session import research_session
 
 MARKET_INDEX_TICKERS = {
@@ -194,6 +194,72 @@ async def update_market_indices(*, start: date, end: date) -> list[LoadResult]:
         await update_market_index("KOSPI", start=start, end=end),
         await update_market_index("KOSDAQ", start=start, end=end),
     ]
+
+
+async def update_market_caps(
+    codes: Iterable[str],
+    *,
+    start: date,
+    end: date,
+    concurrency: int = 4,
+    sleep_seconds: float = 0.15,
+) -> LoadResult:
+    """Download true daily market caps (시가총액/상장주식수) into market_caps.
+
+    Feeds the engine's MARKET_CAP factor/filter, which no longer substitutes a
+    turnover proxy. pykrx-only (FDR carries no historical caps); a code that
+    fails is skipped with a warning rather than silently proxied.
+    """
+
+    semaphore = asyncio.Semaphore(concurrency)
+    total_rows = 0
+
+    async def load_one(code: str) -> int:
+        stock = _pykrx_stock()
+        async with semaphore:
+            try:
+                df = await asyncio.to_thread(
+                    stock.get_market_cap_by_date,
+                    _to_yyyymmdd(start),
+                    _to_yyyymmdd(end),
+                    code,
+                )
+            except Exception as exc:
+                print(f"[phase2:warn] pykrx market cap failed for {code}: {exc}")
+                return 0
+            await asyncio.sleep(sleep_seconds)
+        rows = _market_cap_rows_from_frame(code, df)
+        await _insert_ignore(MarketCapDaily, rows)
+        return len(rows)
+
+    for rows_count in await asyncio.gather(
+        *(load_one(str(code).zfill(6)) for code in codes)
+    ):
+        total_rows += rows_count
+
+    return LoadResult(
+        name="market_caps", requested=total_rows, inserted_or_ignored=total_rows
+    )
+
+
+def _market_cap_rows_from_frame(code: str, df: pd.DataFrame) -> list[dict[str, Any]]:
+    if df is None or df.empty:
+        return []
+    rows: list[dict[str, Any]] = []
+    for idx, row in df.iterrows():
+        cap = row.get("시가총액")
+        if cap is None or pd.isna(cap):
+            continue
+        shares = row.get("상장주식수")
+        rows.append(
+            {
+                "stock_code": code,
+                "date": _to_date(idx),
+                "market_cap": Decimal(str(int(cap))),
+                "shares_outstanding": int(shares) if pd.notna(shares) else None,
+            }
+        )
+    return rows
 
 
 async def get_trading_days(start: date, end: date) -> list[date]:

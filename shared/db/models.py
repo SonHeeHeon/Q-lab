@@ -371,6 +371,21 @@ class MarketIndex(ResearchBase):
     close: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
 
 
+class MarketCapDaily(ResearchBase):
+    """True daily market capitalization (pykrx 시가총액/상장주식수).
+
+    The backtest engine's MARKET_CAP factor/filter reads this table; without it
+    MARKET_CAP is skipped with a warning (never silently proxied by turnover).
+    """
+
+    __tablename__ = "market_caps"
+
+    stock_code: Mapped[str] = mapped_column(Text, primary_key=True)
+    date: Mapped[date] = mapped_column(Date, primary_key=True)
+    market_cap: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    shares_outstanding: Mapped[int | None] = mapped_column(Integer)
+
+
 Index("idx_trades_account_executed", Trade.account_type, Trade.executed_at.desc())
 Index("idx_trades_stock", Trade.stock_code)
 Index("idx_trades_order_no", Trade.kis_order_no)
@@ -392,5 +407,6 @@ Index(
 Index("idx_stocks_market", Stock.market)
 Index("idx_stocks_delisted", Stock.is_delisted)
 Index("idx_prices_date", PriceDaily.date)
+Index("idx_market_caps_date", MarketCapDaily.date)
 Index("idx_fin_stock_disclosed", Financial.stock_code, Financial.disclosed_at)
 Index("idx_factor_date", FactorValue.date, FactorValue.factor_name)
