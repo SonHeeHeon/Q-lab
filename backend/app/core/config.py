@@ -150,6 +150,7 @@ class Settings(BaseSettings):
     DAILY_REPORT_CRON: str = "45 16 * * MON-FRI"
     DATA_SYNC_CRON: str = "0 18 * * MON-FRI"
     BROKER_ORDER_SYNC_CRON: str = "10 16 * * MON-FRI"
+    NAV_SNAPSHOT_CRON: str = "20 16 * * MON-FRI"
     BROKER_ORDER_SYNC_LOOKBACK_DAYS: int = 7
     BROKER_ORDER_SYNC_ACCOUNTS: str = "PAPER,REAL,ISA"
     DEFAULT_STRATEGY_NAME: str = "value_v1"

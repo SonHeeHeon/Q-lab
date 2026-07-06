@@ -12,6 +12,7 @@ from backend.app.core.config import settings
 from backend.app.services.batch.broker_order_sync import run_broker_order_sync
 from backend.app.services.batch.daily_analysis import run_daily_analysis
 from backend.app.services.batch.daily_report import run_daily_report
+from backend.app.services.batch.record_nav_snapshot import run_nav_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,14 @@ def create_batch_scheduler() -> AsyncIOScheduler:
         run_broker_order_sync,
         CronTrigger.from_crontab(settings.BROKER_ORDER_SYNC_CRON, timezone=timezone),
         id="broker_order_sync",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        run_nav_snapshot,
+        CronTrigger.from_crontab(settings.NAV_SNAPSHOT_CRON, timezone=timezone),
+        id="nav_snapshot",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
