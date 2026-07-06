@@ -32,6 +32,8 @@ from research.backtest.composite import (
     GroupSpec,
     composite_score,
 )
+from research.backtest.macro_data import load_regime_series
+from research.backtest.regime import compute_regime
 from shared.domain.strategy import (
     FactorGroup,
     FactorWeight,
@@ -126,10 +128,22 @@ def run_backtest(
                 warnings=warnings,
             )
             selected = list(scored.head(strategy.top_n).index)
+            exposure = 1.0
+            if strategy.use_regime:
+                regime = compute_regime(
+                    current_day, **load_regime_series(current_day, db_path=path)
+                )
+                exposure = regime.exposure
+                _warn(
+                    warnings,
+                    f"{current_day} regime={regime.label} "
+                    f"exposure={exposure:.0%} R={regime.r_score:.2f}",
+                )
             target = _allocate_equal_weight(
                 selected,
                 nav=nav,
                 prices=last_prices,
+                exposure=exposure,
             )
             rebalance_trades = rebalance(
                 current=positions,
@@ -727,11 +741,13 @@ def _allocate_equal_weight(
     *,
     nav: float,
     prices: dict[str, float],
+    exposure: float = 1.0,
 ) -> dict[str, int]:
-    if not selected_codes or nav <= 0:
+    invested = max(0.0, min(1.0, exposure))
+    if not selected_codes or nav <= 0 or invested <= 0:
         return {}
 
-    budget_per_stock = (nav * INVESTABLE_NAV_RATIO) / len(selected_codes)
+    budget_per_stock = (nav * INVESTABLE_NAV_RATIO * invested) / len(selected_codes)
     target: dict[str, int] = {}
     for code in selected_codes:
         price = prices.get(code)

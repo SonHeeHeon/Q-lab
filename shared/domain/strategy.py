@@ -66,3 +66,6 @@ class StrategyDefinition(BaseModel):
     min_groups: int = 5
     winsor_pct: float = 0.01
     clip_z: float = 3.0
+    # Layer B: when true, scale invested capital by the macro regime exposure
+    # (0–100%); the rest is held as cash. CRISIS (0%) fully de-risks.
+    use_regime: bool = False
