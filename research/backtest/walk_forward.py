@@ -1,13 +1,24 @@
-"""Walk-forward validation for strategy robustness checks."""
+"""Walk-forward validation for strategy robustness checks.
+
+With ``optimize_trials > 0`` this performs true walk-forward optimization:
+factor weights are re-optimized on each fold's TRAIN window (in-memory Optuna,
+no report/study-file side effects) and only those weights are evaluated on the
+out-of-sample TEST window. With the default ``optimize_trials=0`` it degrades
+to the original fixed-weight OOS report (kept for backward compatibility, but
+note that fixed weights measure only the given weights' robustness — they say
+nothing about the optimization process being robust).
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import date as Date
 from pathlib import Path
 
 from research.backtest.engine import RunResult, run_backtest
-from shared.domain.strategy import StrategyDefinition
+from shared.domain.strategy import FactorWeight, StrategyDefinition
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,6 +27,7 @@ class WalkForwardWindow:
     train_end: Date
     test_start: Date
     test_end: Date
+    test_factors: list[FactorWeight] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,11 +43,29 @@ def walk_forward(
     step_years: int = 1,
     *,
     db_path: Path | None = None,
+    optimize_trials: int = 0,
+    objective: str = "sharpe",
+    optimizer: Callable[[StrategyDefinition], StrategyDefinition] | None = None,
 ) -> WalkForwardResult:
-    """Run rolling out-of-sample test windows across the strategy period."""
+    """Run rolling out-of-sample test windows across the strategy period.
+
+    optimize_trials: Optuna trials per fold on the train window (0 = no
+        re-optimization, original behavior).
+    optimizer: override the per-fold optimizer — receives the TRAIN-window
+        strategy and returns the strategy whose factors are used out-of-sample.
+    """
 
     if train_years <= 0 or test_years <= 0 or step_years <= 0:
         raise ValueError("train_years, test_years, and step_years must be positive.")
+
+    if optimizer is None and optimize_trials > 0:
+        def optimizer(train_strategy: StrategyDefinition) -> StrategyDefinition:
+            return _optimize_fold(
+                train_strategy,
+                trials=optimize_trials,
+                objective=objective,
+                db_path=db_path,
+            )
 
     windows: list[WalkForwardWindow] = []
     results: list[RunResult] = []
@@ -50,11 +80,25 @@ def walk_forward(
         if test_end > strategy.end_date:
             test_end = strategy.end_date
 
+        test_factors = [f.model_copy(deep=True) for f in strategy.factors]
+        if optimizer is not None:
+            train_strategy = strategy.model_copy(
+                update={
+                    "name": f"{strategy.name}_wf_train_{train_start.isoformat()}",
+                    "start_date": train_start,
+                    "end_date": train_end,
+                },
+                deep=True,
+            )
+            optimized = optimizer(train_strategy)
+            test_factors = [f.model_copy(deep=True) for f in optimized.factors]
+
         test_strategy = strategy.model_copy(
             update={
                 "name": f"{strategy.name}_wf_{test_start.isoformat()}",
                 "start_date": test_start,
                 "end_date": test_end,
+                "factors": test_factors,
             },
             deep=True,
         )
@@ -64,6 +108,7 @@ def walk_forward(
                 train_end=train_end,
                 test_start=test_start,
                 test_end=test_end,
+                test_factors=test_factors,
             )
         )
         results.append(run_backtest(test_strategy, db_path=db_path))
@@ -73,6 +118,48 @@ def walk_forward(
             break
 
     return WalkForwardResult(windows=windows, results=results)
+
+
+def _optimize_fold(
+    strategy: StrategyDefinition,
+    *,
+    trials: int,
+    objective: str,
+    db_path: Path | None,
+    seed: int = 42,
+    weight_low: float = -2.0,
+    weight_high: float = 2.0,
+) -> StrategyDefinition:
+    """Optimize factor weights on the train window with an in-memory study.
+
+    Deliberately does NOT reuse optuna_runner.optimize_strategy: that writes
+    report directories and a shared study DB, which per-fold optimization must
+    not pollute. The suggestion/objective helpers are shared so the search
+    space stays identical to the standalone optimizer.
+    """
+    import optuna
+
+    from research.optimization.optuna_runner import (
+        _objective_value,
+        _strategy_with_params,
+        _suggest_strategy,
+    )
+
+    def objective_fn(trial: optuna.Trial) -> float:
+        candidate = _suggest_strategy(
+            strategy, trial, weight_low=weight_low, weight_high=weight_high
+        )
+        result = run_backtest(candidate, db_path=db_path)
+        value = _objective_value(result, objective.lower())
+        return value if math.isfinite(value) else -1_000_000_000.0
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    study = optuna.create_study(
+        direction="maximize",
+        sampler=optuna.samplers.TPESampler(seed=seed),
+    )
+    study.optimize(objective_fn, n_trials=trials, gc_after_trial=True)
+    return _strategy_with_params(strategy, study.best_params)
 
 
 def _add_years(value: Date, years: int) -> Date:
