@@ -72,3 +72,8 @@ app/web/
 .idea/
 *.iml
 .DS_Store
+
+# --- AI / agent tooling (solo project, no need to share) ---
+.omc/
+**/AGENTS.md
+research/reports/matrix/
