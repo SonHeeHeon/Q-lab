@@ -50,10 +50,13 @@ class StrategyDefinition(BaseModel):
     description: str
     universe: Literal[
         "KOSPI200",
+        "KOSPI_TOP100",
         "KOSDAQ150",
         "KOSPI_ALL",
         "KOSDAQ_ALL",
         "NASDAQ100",
+        "ETF_KR",
+        "ETF_US",
         "CUSTOM",
     ]
     rebalance_freq: Literal["MONTHLY", "QUARTERLY", "YEARLY"]

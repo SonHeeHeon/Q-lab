@@ -217,6 +217,13 @@ def get_universe(
         params.append("KOSDAQ")
     elif normalized == "NASDAQ100":
         return _us_universe(as_of=as_of, db_path=path, exchange="NASDAQ")
+    elif normalized == "ETF_US":
+        return _us_universe(as_of=as_of, db_path=path, exchange="ETF")
+    elif normalized == "ETF_KR":
+        market_clause = "AND market = ?"
+        params.append("ETF")
+    elif normalized == "KOSPI_TOP100":
+        return _kospi_top_n_universe(as_of=as_of, db_path=path, top_n=100)
     elif normalized == "KOSPI_ALL":
         market_clause = "AND market = ?"
         params.append("KOSPI")
@@ -563,6 +570,43 @@ def _index_membership_universe(
     return []
 
 
+def _kospi_top_n_universe(
+    *,
+    as_of: Date,
+    db_path: Path,
+    top_n: int,
+) -> list[str]:
+    """Top-N KOSPI stocks by point-in-time market cap (market_caps table).
+
+    Empty when market_caps has no coverage on/before ``as_of`` — never falls
+    back to a turnover ranking.
+    """
+    with sqlite3.connect(db_path) as conn:
+        if not table_exists(conn, "market_caps"):
+            return []
+        rows = conn.execute(
+            """
+            SELECT s.code
+            FROM stocks s
+            JOIN (
+                SELECT stock_code, market_cap,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY stock_code ORDER BY date DESC
+                       ) AS rn
+                FROM market_caps
+                WHERE date <= ?
+            ) mc ON mc.stock_code = s.code AND mc.rn = 1
+            WHERE s.market = 'KOSPI'
+              AND s.listed_at <= ?
+              AND (s.delisted_at IS NULL OR s.delisted_at > ?)
+            ORDER BY CAST(mc.market_cap AS REAL) DESC
+            LIMIT ?
+            """,
+            [as_of.isoformat(), as_of.isoformat(), as_of.isoformat(), top_n],
+        ).fetchall()
+    return normalize_codes(row[0] for row in rows)
+
+
 def _us_universe(
     *,
     as_of: Date,
@@ -667,7 +711,9 @@ def _load_price_rows(start: Date, end: Date, db_path: Path, universe: str) -> pd
     normalized_universe = universe.upper()
     with sqlite3.connect(db_path) as conn:
         frames: list[pd.DataFrame] = []
-        if normalized_universe != "NASDAQ100" and table_exists(conn, "prices_daily"):
+        if normalized_universe not in {"NASDAQ100", "ETF_US"} and table_exists(
+            conn, "prices_daily"
+        ):
             frames.append(
                 pd.read_sql_query(
                     """
@@ -680,7 +726,9 @@ def _load_price_rows(start: Date, end: Date, db_path: Path, universe: str) -> pd
                     params=[start.isoformat(), end.isoformat()],
                 )
             )
-        if normalized_universe in {"NASDAQ100", "CUSTOM"} and table_exists(conn, "prices_daily_us"):
+        if normalized_universe in {"NASDAQ100", "ETF_US", "CUSTOM"} and table_exists(
+            conn, "prices_daily_us"
+        ):
             frames.append(
                 pd.read_sql_query(
                     """
