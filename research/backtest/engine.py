@@ -108,6 +108,14 @@ def run_backtest(
 
     pending_orders: tuple[list[str], float] | None = None
     pending_execute_index = -1
+    applied_exposure = 1.0
+    last_selected: list[str] = []
+    regime_series: dict = {}
+    if strategy.use_regime:
+        window_days = (trading_days[-1] - trading_days[0]).days + 500
+        regime_series = load_regime_series(
+            trading_days[-1], db_path=path, lookback_days=window_days
+        )
 
     for day_index, current_day in enumerate(trading_days):
         last_prices.update(daily_prices.get(current_day, {}))
@@ -141,12 +149,57 @@ def run_backtest(
             lagged_selected, lagged_exposure = pending_orders
             pending_orders = None
             _execute(lagged_selected, lagged_exposure, current_day)
+            applied_exposure = lagged_exposure
 
-        if _is_rebalance_day(
+        is_rebalance = _is_rebalance_day(
             current_day,
             last_rebalance_day,
             strategy.rebalance_freq,
+        )
+
+        if (
+            strategy.use_regime
+            and strategy.regime_check == "MONTHLY"
+            and not is_rebalance
+            and day_index > 0
+            and current_day.month != trading_days[day_index - 1].month
         ):
+            confirmed = _confirmed_regime_exposure(
+                day_index, trading_days, regime_series
+            )
+            if confirmed is not None and confirmed[0] != applied_exposure:
+                new_exposure, label = confirmed
+                _warn(
+                    warnings,
+                    f"{current_day} regime-adjust {applied_exposure:.0%}"
+                    f"→{new_exposure:.0%} ({label})",
+                )
+                if new_exposure < applied_exposure and applied_exposure > 0:
+                    # De-risk in place: shrink every holding proportionally.
+                    ratio = new_exposure / applied_exposure
+                    target = {
+                        code: int(qty * ratio) for code, qty in positions.items()
+                    }
+                    target = {c: q for c, q in target.items() if q > 0}
+                    rebalance_trades = rebalance(
+                        current=positions,
+                        target=target,
+                        prices=last_prices,
+                        trade_date=current_day,
+                        cost_model=cost_model,
+                    )
+                    executed_trades, cash = _apply_trades(
+                        cash, positions, rebalance_trades, warnings=warnings
+                    )
+                    trades.extend(executed_trades)
+                    nav = _mark_to_market(cash, positions, last_prices)
+                elif last_selected:
+                    # Re-risk: rebuild toward the last selection at the new
+                    # exposure (also handles recovery from 0%).
+                    _execute(last_selected, new_exposure, current_day)
+                applied_exposure = new_exposure
+
+        if is_rebalance:
             universe = get_universe(strategy.universe, as_of=current_day, db_path=path)
             scored = score_stocks(
                 universe,
@@ -169,15 +222,20 @@ def run_backtest(
             selected = list(scored.head(strategy.top_n).index)
             exposure = 1.0
             if strategy.use_regime:
-                regime = compute_regime(
-                    current_day, **load_regime_series(current_day, db_path=path)
-                )
+                regime = compute_regime(current_day, **regime_series)
                 exposure = regime.exposure
+                if strategy.regime_check == "MONTHLY":
+                    confirmed = _confirmed_regime_exposure(
+                        day_index, trading_days, regime_series
+                    )
+                    if confirmed is not None:
+                        exposure = confirmed[0]
                 _warn(
                     warnings,
                     f"{current_day} regime={regime.label} "
                     f"exposure={exposure:.0%} R={regime.r_score:.2f}",
                 )
+            last_selected = selected
             if strategy.execution_lag_days > 0:
                 # Signal today, fill at a later close — removes the
                 # same-close fill assumption (look-ahead robustness).
@@ -185,6 +243,7 @@ def run_backtest(
                 pending_execute_index = day_index + strategy.execution_lag_days
             else:
                 _execute(selected, exposure, current_day)
+                applied_exposure = exposure
             last_rebalance_day = current_day
 
         equity_curve.append(EquityPoint(date=current_day, nav=nav))
@@ -593,6 +652,31 @@ def _index_membership_universe(
     if file_codes:
         return file_codes
     return []
+
+
+def _confirmed_regime_exposure(
+    day_index: int,
+    trading_days: list[Date],
+    regime_series: dict,
+    *,
+    persistence: int = 5,
+) -> tuple[float, str] | None:
+    """Regime exposure confirmed by ``persistence`` consecutive same-label days.
+
+    Whipsaw guard for intra-rebalance adjustments: a single panicky day must
+    not flip the book. Returns None while unconfirmed (caller keeps the
+    currently applied exposure).
+    """
+    if day_index + 1 < persistence:
+        return None
+    states = [
+        compute_regime(day, **regime_series)
+        for day in trading_days[day_index - persistence + 1 : day_index + 1]
+    ]
+    label = states[-1].label
+    if all(state.label == label for state in states):
+        return states[-1].exposure, label
+    return None
 
 
 def _kospi_top_n_universe(

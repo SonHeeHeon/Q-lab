@@ -72,6 +72,12 @@ class StrategyDefinition(BaseModel):
     # Layer B: when true, scale invested capital by the macro regime exposure
     # (0–100%); the rest is held as cash. CRISIS (0%) fully de-risks.
     use_regime: bool = False
+    # REBALANCE: regime sampled only on rebalance days (v1 behavior — proven
+    # ineffective for drawdown control with quarterly rebalances).
+    # MONTHLY: additionally checked at each month start between rebalances
+    # with 5-day label persistence; positions are scaled up/down to the
+    # confirmed exposure without re-scoring.
+    regime_check: Literal["REBALANCE", "MONTHLY"] = "REBALANCE"
     # Robustness option: execute rebalance trades N trading days after the
     # signal day (0 = same-day close, the optimistic default). lag=1 removes
     # the signal-day-close fill assumption entirely.
