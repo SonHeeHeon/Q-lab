@@ -79,10 +79,23 @@ async def test_run_data_sync_wires_loaders(tmp_path: Path, monkeypatch: pytest.M
         calls["indices"] = {"start": start, "end": end}
         return [_FakeResult(4), _FakeResult(5)]
 
+    async def fake_us(*, start, end):
+        calls["us"] = {"start": start, "end": end}
+        return _FakeResult(7)
+
+    class _FakeMacro:
+        total = 6
+
+    async def fake_macro(*, start, end):
+        calls["macro"] = {"start": start, "end": end}
+        return _FakeMacro()
+
     monkeypatch.setattr(ds, "update_prices", fake_prices)
     monkeypatch.setattr(ds, "update_market_caps", fake_caps)
     monkeypatch.setattr(ds, "update_investor_flows", fake_flows)
     monkeypatch.setattr(ds, "update_market_indices", fake_indices)
+    monkeypatch.setattr(ds, "update_us_prices_incremental", fake_us)
+    monkeypatch.setattr(ds, "update_macro", fake_macro)
 
     summary = await ds.run_data_sync(end=TODAY)
 
@@ -91,12 +104,15 @@ async def test_run_data_sync_wires_loaders(tmp_path: Path, monkeypatch: pytest.M
     assert calls["caps"]["start"] == date(2026, 6, 25)     # 6/30 − 5d
     assert calls["flows"]["start"] == date(2026, 6, 29)    # absent → price start
     assert calls["indices"]["start"] == date(2026, 6, 28)  # 7/3 − 5d
+    assert calls["us"]["start"] == date(2026, 6, 29)       # absent → price start
     assert all(c["end"] == TODAY for c in calls.values())
     assert summary.to_dict() == {
         "prices": 10,
         "market_caps": 20,
         "investor_flows": 30,
         "market_indices": 9,
+        "us_prices": 7,
+        "macro": 6,
         "errors": 0,
     }
 
@@ -115,11 +131,23 @@ async def test_run_data_sync_counts_step_failures(tmp_path: Path, monkeypatch: p
     async def ok_indices(*, start, end):
         return [_FakeResult(1)]
 
+    async def ok_us(*, start, end):
+        return _FakeResult(1)
+
+    class _FakeMacro:
+        total = 1
+
+    async def ok_macro(*, start, end):
+        return _FakeMacro()
+
     monkeypatch.setattr(ds, "update_prices", ok)
     monkeypatch.setattr(ds, "update_market_caps", boom)
     monkeypatch.setattr(ds, "update_investor_flows", ok)
     monkeypatch.setattr(ds, "update_market_indices", ok_indices)
+    monkeypatch.setattr(ds, "update_us_prices_incremental", ok_us)
+    monkeypatch.setattr(ds, "update_macro", ok_macro)
 
     summary = await ds.run_data_sync(end=TODAY)
     assert summary.errors == 1
     assert summary.prices == 1 and summary.investor_flows == 1  # other steps ran
+    assert summary.us_prices == 1 and summary.macro == 1

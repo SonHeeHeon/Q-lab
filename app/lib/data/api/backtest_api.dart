@@ -195,8 +195,12 @@ class BacktestRunDetail {
 
 enum BacktestUniverse {
   kospi200('KOSPI200', 'KOSPI 200'),
+  kospiTop100('KOSPI_TOP100', 'KOSPI 시총 TOP100'),
   kospiAll('KOSPI_ALL', 'KOSPI 전체'),
   kosdaqAll('KOSDAQ_ALL', 'KOSDAQ 전체'),
+  nasdaq100('NASDAQ100', '나스닥 100'),
+  etfKr('ETF_KR', '국내 ETF (자산군)'),
+  etfUs('ETF_US', '미국 ETF (GTAA)'),
   custom('CUSTOM', '사용자 정의');
 
   const BacktestUniverse(this.wire, this.label);

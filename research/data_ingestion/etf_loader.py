@@ -195,6 +195,42 @@ def _us_price_rows(ticker: str, close: pd.Series) -> list[tuple]:
     return rows
 
 
+async def update_us_prices_incremental(*, start: date, end: date) -> LoadResult:
+    """Incremental close update for EVERY ticker already in stocks_us
+    (NASDAQ100 stocks + US ETFs) via one batched yfinance download.
+
+    Keeps prices_daily_us from going stale — before this, US prices only
+    advanced when the bulk download script was run by hand.
+    """
+    with sqlite3.connect(research_db_path) as conn:
+        _ensure_us_dedup_indexes(conn)
+        tickers = [
+            row[0]
+            for row in conn.execute(
+                "SELECT ticker FROM stocks_us WHERE is_delisted = 0 ORDER BY ticker"
+            )
+        ]
+    if not tickers:
+        return LoadResult(name="us_prices", requested=0, inserted_or_ignored=0)
+
+    frame = await asyncio.to_thread(_download_yf_closes, tickers, start, end)
+    total = 0
+    with sqlite3.connect(research_db_path) as conn:
+        for ticker in tickers:
+            if ticker not in frame.columns:
+                continue
+            rows = _us_price_rows(ticker, frame[ticker])
+            conn.executemany(
+                "INSERT OR IGNORE INTO prices_daily_us"
+                " (ticker, date, open, high, low, close, volume, adj_close, currency)"
+                " VALUES (?,?,?,?,?,?,?,?,?)",
+                rows,
+            )
+            total += len(rows)
+        conn.commit()
+    return LoadResult(name="us_prices", requested=total, inserted_or_ignored=total)
+
+
 def _ensure_us_dedup_indexes(conn: sqlite3.Connection) -> None:
     """The ad-hoc US tables ship without PKs — add unique indexes so
     INSERT OR IGNORE is genuinely idempotent."""

@@ -18,6 +18,8 @@ from datetime import date as Date
 from datetime import timedelta
 
 from backend.app.core.config import settings
+from research.data_ingestion.etf_loader import update_us_prices_incremental
+from research.data_ingestion.macro_loader import update_macro
 from research.data_ingestion.pykrx_loader import (
     update_investor_flows,
     update_market_caps,
@@ -37,6 +39,8 @@ class DataSyncSummary:
     market_caps: int = 0
     investor_flows: int = 0
     market_indices: int = 0
+    us_prices: int = 0
+    macro: int = 0
     errors: int = 0
 
     def to_dict(self) -> dict[str, int]:
@@ -45,6 +49,8 @@ class DataSyncSummary:
             "market_caps": self.market_caps,
             "investor_flows": self.investor_flows,
             "market_indices": self.market_indices,
+            "us_prices": self.us_prices,
+            "macro": self.macro,
             "errors": self.errors,
         }
 
@@ -76,6 +82,9 @@ async def run_data_sync(
         )
         index_start = _incremental_start(
             conn, "market_index", today, overlap_days, fallback=price_start
+        )
+        us_start = _incremental_start(
+            conn, "prices_daily_us", today, overlap_days, fallback=price_start
         )
 
     if not codes:
@@ -111,6 +120,20 @@ async def run_data_sync(
     except Exception:
         summary.errors += 1
         logger.exception("data_sync: market index update failed")
+
+    try:
+        result = await update_us_prices_incremental(start=us_start, end=today)
+        summary.us_prices = result.requested
+    except Exception:
+        summary.errors += 1
+        logger.exception("data_sync: us price update failed")
+
+    try:
+        macro_result = await update_macro(start=index_start, end=today)
+        summary.macro = macro_result.total
+    except Exception:
+        summary.errors += 1
+        logger.exception("data_sync: macro update failed")
 
     logger.info("data_sync summary=%s", summary.to_dict())
     return summary
