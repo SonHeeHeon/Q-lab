@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 from datetime import date
-from typing import Any
 
 import pandas as pd
 
@@ -72,7 +71,6 @@ async def update_kr_etf_prices(
     etfs = codes or KR_CORE_ETFS
     semaphore = asyncio.Semaphore(concurrency)
     total_rows = 0
-    stock_rows: list[dict[str, Any]] = []
 
     async def load_one(code: str, name: str) -> int:
         pykrx_stock = _pykrx_stock()
@@ -89,8 +87,12 @@ async def update_kr_etf_prices(
                 return 0
             await asyncio.sleep(sleep_seconds)
         rows = _price_rows_from_frame(code, df)
-        if rows:
-            stock_rows.append(
+        if not rows:
+            return 0
+        # prices_daily.stock_code has an FK to stocks.code (and the session
+        # runs with foreign_keys=ON), so the stocks row MUST exist first.
+        await _upsert_stock_rows(
+            [
                 {
                     "code": code,
                     "name": name,
@@ -101,7 +103,8 @@ async def update_kr_etf_prices(
                     "delisted_at": None,
                     "is_delisted": False,
                 }
-            )
+            ]
+        )
         await _insert_ignore(PriceDaily, rows)
         return len(rows)
 
@@ -110,7 +113,6 @@ async def update_kr_etf_prices(
     ):
         total_rows += count
 
-    await _upsert_stock_rows(stock_rows)
     return LoadResult(
         name="etf_kr_prices", requested=total_rows, inserted_or_ignored=total_rows
     )

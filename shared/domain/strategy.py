@@ -72,3 +72,7 @@ class StrategyDefinition(BaseModel):
     # Layer B: when true, scale invested capital by the macro regime exposure
     # (0–100%); the rest is held as cash. CRISIS (0%) fully de-risks.
     use_regime: bool = False
+    # Robustness option: execute rebalance trades N trading days after the
+    # signal day (0 = same-day close, the optimistic default). lag=1 removes
+    # the signal-day-close fill assumption entirely.
+    execution_lag_days: int = 0

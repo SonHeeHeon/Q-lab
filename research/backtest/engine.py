@@ -12,7 +12,12 @@ import pandas as pd
 from pydantic import BaseModel
 
 from research.backtest.metrics import Metrics, compute_metrics
-from research.backtest.simulator import CostModel, SimulatedTrade, rebalance
+from research.backtest.simulator import (
+    CostModel,
+    SimulatedTrade,
+    default_cost_model_for_universe,
+    rebalance,
+)
 from research.factors.momentum import calculate_named_momentum
 from research.factors.common import (
     normalize_code,
@@ -73,6 +78,8 @@ def run_backtest(
 
     path = db_path or research_db_path
     warnings: list[str] = []
+    if cost_model is None:
+        cost_model = default_cost_model_for_universe(strategy.universe)
     price_rows = _load_price_rows(strategy.start_date, strategy.end_date, path, strategy.universe)
 
     if price_rows.empty:
@@ -99,9 +106,41 @@ def run_backtest(
     equity_curve: list[EquityPoint] = []
     last_rebalance_day: Date | None = None
 
-    for current_day in trading_days:
+    pending_orders: tuple[list[str], float] | None = None
+    pending_execute_index = -1
+
+    for day_index, current_day in enumerate(trading_days):
         last_prices.update(daily_prices.get(current_day, {}))
         nav = _mark_to_market(cash, positions, last_prices)
+
+        def _execute(selected: list[str], exposure: float, day: Date) -> None:
+            nonlocal cash, nav
+            target = _allocate_equal_weight(
+                selected,
+                nav=nav,
+                prices=last_prices,
+                exposure=exposure,
+            )
+            rebalance_trades = rebalance(
+                current=positions,
+                target=target,
+                prices=last_prices,
+                trade_date=day,
+                cost_model=cost_model,
+            )
+            executed_trades, cash = _apply_trades(
+                cash,
+                positions,
+                rebalance_trades,
+                warnings=warnings,
+            )
+            trades.extend(executed_trades)
+            nav = _mark_to_market(cash, positions, last_prices)
+
+        if pending_orders is not None and day_index >= pending_execute_index:
+            lagged_selected, lagged_exposure = pending_orders
+            pending_orders = None
+            _execute(lagged_selected, lagged_exposure, current_day)
 
         if _is_rebalance_day(
             current_day,
@@ -139,28 +178,14 @@ def run_backtest(
                     f"{current_day} regime={regime.label} "
                     f"exposure={exposure:.0%} R={regime.r_score:.2f}",
                 )
-            target = _allocate_equal_weight(
-                selected,
-                nav=nav,
-                prices=last_prices,
-                exposure=exposure,
-            )
-            rebalance_trades = rebalance(
-                current=positions,
-                target=target,
-                prices=last_prices,
-                trade_date=current_day,
-                cost_model=cost_model,
-            )
-            executed_trades, cash = _apply_trades(
-                cash,
-                positions,
-                rebalance_trades,
-                warnings=warnings,
-            )
-            trades.extend(executed_trades)
+            if strategy.execution_lag_days > 0:
+                # Signal today, fill at a later close — removes the
+                # same-close fill assumption (look-ahead robustness).
+                pending_orders = (selected, exposure)
+                pending_execute_index = day_index + strategy.execution_lag_days
+            else:
+                _execute(selected, exposure, current_day)
             last_rebalance_day = current_day
-            nav = _mark_to_market(cash, positions, last_prices)
 
         equity_curve.append(EquityPoint(date=current_day, nav=nav))
 
