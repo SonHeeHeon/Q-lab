@@ -88,6 +88,7 @@ def _ttm_financials(
                 mixed_annual=False,
             )
         )
+    frames = [frame for frame in frames if not frame.empty]
     if not frames:
         return pd.DataFrame(
             index=pd.Index([], name="stock_code"),

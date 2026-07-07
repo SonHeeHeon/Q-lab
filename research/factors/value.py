@@ -192,6 +192,7 @@ def _latest_financials(
         frames.append(
             _latest_financials_from_table(conn, "financials_us", "ticker", global_codes, as_of)
         )
+    frames = [frame for frame in frames if not frame.empty]
     if not frames:
         return pd.DataFrame(
             index=pd.Index([], name="stock_code"),
