@@ -96,6 +96,42 @@ def test_injected_optimizer_decides_oos_weights(monkeypatch: pytest.MonkeyPatch)
     assert base.factors[0].weight == -1.0
 
 
+def test_injected_optimizer_group_weights_flow_to_oos(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shared.domain.strategy import FactorGroup, GroupFactor
+
+    oos_runs: list[StrategyDefinition] = []
+
+    def fake_run(strategy, db_path=None, **kwargs):
+        oos_runs.append(strategy)
+        return _fake_result(strategy)
+
+    def fake_optimizer(train_strategy: StrategyDefinition) -> StrategyDefinition:
+        groups = [g.model_copy(update={"weight": 0.9}) for g in train_strategy.groups]
+        return train_strategy.model_copy(update={"groups": groups}, deep=True)
+
+    monkeypatch.setattr(wf, "run_backtest", fake_run)
+    base = _strategy().model_copy(
+        update={
+            "factors": [],
+            "groups": [
+                FactorGroup(name="Value", weight=0.5, factors=[
+                    GroupFactor(factor="PER", higher_is_better=False)
+                ]),
+            ],
+        },
+        deep=True,
+    )
+    result = wf.walk_forward(base, optimizer=fake_optimizer)
+
+    # Tuned GROUP weights must reach the OOS strategies and the window record
+    # (regression: they were silently dropped, making tuning a no-op).
+    assert all(s.groups[0].weight == 0.9 for s in oos_runs)
+    assert all(w.test_groups[0].weight == 0.9 for w in result.windows)
+    assert base.groups[0].weight == 0.5
+
+
 def test_optimize_fold_converges_with_inmemory_optuna(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

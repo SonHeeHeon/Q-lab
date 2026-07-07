@@ -18,7 +18,7 @@ from datetime import date as Date
 from pathlib import Path
 
 from research.backtest.engine import RunResult, run_backtest
-from shared.domain.strategy import FactorWeight, StrategyDefinition
+from shared.domain.strategy import FactorGroup, FactorWeight, StrategyDefinition
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +28,7 @@ class WalkForwardWindow:
     test_start: Date
     test_end: Date
     test_factors: list[FactorWeight] = field(default_factory=list)
+    test_groups: list[FactorGroup] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +82,11 @@ def walk_forward(
             test_end = strategy.end_date
 
         test_factors = [f.model_copy(deep=True) for f in strategy.factors]
+        test_groups = (
+            [g.model_copy(deep=True) for g in strategy.groups]
+            if strategy.groups
+            else strategy.groups
+        )
         if optimizer is not None:
             train_strategy = strategy.model_copy(
                 update={
@@ -92,6 +98,13 @@ def walk_forward(
             )
             optimized = optimizer(train_strategy)
             test_factors = [f.model_copy(deep=True) for f in optimized.factors]
+            # Grouped strategies tune GROUP weights — they must flow to the
+            # OOS window too, or the whole optimization is a silent no-op.
+            test_groups = (
+                [g.model_copy(deep=True) for g in optimized.groups]
+                if optimized.groups
+                else optimized.groups
+            )
 
         test_strategy = strategy.model_copy(
             update={
@@ -99,6 +112,7 @@ def walk_forward(
                 "start_date": test_start,
                 "end_date": test_end,
                 "factors": test_factors,
+                "groups": test_groups,
             },
             deep=True,
         )
@@ -109,6 +123,7 @@ def walk_forward(
                 test_start=test_start,
                 test_end=test_end,
                 test_factors=test_factors,
+                test_groups=test_groups,
             )
         )
         results.append(run_backtest(test_strategy, db_path=db_path))
