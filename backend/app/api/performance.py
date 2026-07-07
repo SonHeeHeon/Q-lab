@@ -21,6 +21,7 @@ from backend.app.services.performance.service import (
     load_account_performance,
     load_backtest_performance,
 )
+from research.backtest.benchmark import load_benchmark_close
 from shared.db.session import get_research_session, get_service_session
 from shared.domain.account import AccountType
 
@@ -74,7 +75,7 @@ def _to_response(perf: ModePerformance) -> ModePerformanceResponse:
         initial_nav=perf.initial_nav,
         current_nav=perf.current_nav,
         equity_curve=[PerfPoint(date=day, nav=nav) for day, nav in perf.equity_curve],
-        benchmark_curve=None,
+        benchmark_curve=_benchmark_points(perf),
         metrics=PerfMetrics(
             cagr=perf.metrics.cagr,
             mdd=perf.metrics.mdd,
@@ -87,6 +88,23 @@ def _to_response(perf: ModePerformance) -> ModePerformanceResponse:
         ),
         warnings=perf.warnings,
     )
+
+
+def _benchmark_points(perf: ModePerformance) -> list[PerfPoint] | None:
+    """KOSPI close series over the mode's window (for the overlay chart).
+
+    None when the window is unknown or market_index has no coverage — the app
+    simply skips the overlay.
+    """
+    if perf.start_date is None or perf.as_of is None:
+        return None
+    series = load_benchmark_close("KOSPI", perf.start_date, perf.as_of)
+    if series.empty:
+        return None
+    return [
+        PerfPoint(date=idx.date(), nav=float(value))
+        for idx, value in series.items()
+    ]
 
 
 @router.get("/paper", response_model=ApiEnvelope[ModePerformanceResponse])
