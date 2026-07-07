@@ -116,6 +116,17 @@ def _suggest_strategy(
     weight_low: float,
     weight_high: float,
 ) -> StrategyDefinition:
+    if strategy.groups:
+        # Grouped (qlab_alpha_v2) mode: tune GROUP weights. The composite
+        # renormalizes by available weights, so only ratios matter — search
+        # positive weights and let renormalization handle scale.
+        groups = []
+        for group in strategy.groups:
+            key = f"group_{group.name.lower()}_weight"
+            suggested = trial.suggest_float(key, 0.05, 1.0)
+            groups.append(group.model_copy(update={"weight": suggested}))
+        return strategy.model_copy(update={"groups": groups}, deep=True)
+
     factors: list[FactorWeight] = []
     for factor in strategy.factors:
         key = f"{factor.factor.lower()}_weight"
@@ -209,6 +220,15 @@ def _strategy_with_params(
     strategy: StrategyDefinition,
     params: dict[str, float],
 ) -> StrategyDefinition:
+    if strategy.groups:
+        groups = []
+        for group in strategy.groups:
+            key = f"group_{group.name.lower()}_weight"
+            groups.append(
+                group.model_copy(update={"weight": params.get(key, group.weight)})
+            )
+        return strategy.model_copy(update={"groups": groups}, deep=True)
+
     factors: list[FactorWeight] = []
     for factor in strategy.factors:
         key = f"{factor.factor.lower()}_weight"

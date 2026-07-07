@@ -1,0 +1,25 @@
+name: etf_rotation_kr
+description: >-
+  KR 상장 ETF 자산군 로테이션(듀얼 모멘텀) — 매월 12M/3M 모멘텀 상위 3개 자산군
+  보유. 지수/ETF 투자 판단용. 팩터는 가격 모멘텀만 사용(ETF는 재무/수급 없음).
+universe: ETF_KR
+rebalance_freq: MONTHLY
+top_n: 3
+start_date: 2016-07-01
+end_date: 2026-07-04
+
+factors: []
+
+filters: []
+
+groups:
+  - name: Momentum
+    weight: 1.0
+    factors:
+      - {factor: MOMENTUM_12M, higher_is_better: true}
+      - {factor: MOMENTUM_3M, higher_is_better: true}
+
+min_groups: 1
+winsor_pct: 0.01
+clip_z: 3.0
+use_regime: false
