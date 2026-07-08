@@ -78,3 +78,4 @@ app/web/
 **/AGENTS.md
 research/reports/matrix/
 research/strategies/private/
+.claude/settings.json

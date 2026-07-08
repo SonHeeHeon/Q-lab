@@ -24,10 +24,14 @@ KIS + Toss 기반 개인 주식 앱. FastAPI(backend) + Flutter(app) + Python �
 - Flutter 변경 시 검증: `flutter analyze && flutter test`
 - Python 변경 시 검증: `pytest backend/tests/ -v` 또는 `pytest research/tests/ -v`
 
-### 4. 코드 수정 경계 (절대 불변)
-- `app/` Flutter 코드만 직접 수정.
-- `backend/`, `research/`, `shared/` Python 코드는 **절대 수정 금지** (Codex 담당).
-- 백엔드 필요 변경사항은 `.omc/plan/` 의 "Codex 요청" 섹션에 명시.
+### 4. 코드 수정 범위 — 풀스택 (2026-07-06 업데이트)
+- Claude가 **`app/`(Flutter) + `backend/`·`research/`·`shared/`(Python) 전체**를 직접 구현·수정한다.
+- (기존 "backend/research/shared는 Codex 담당, 수정 금지" 분리 규칙은 사용자 지시로 **폐지**됨.)
+- Python 변경 시 반드시 관련 테스트(`pytest`) 통과를 검증한 뒤 커밋한다.
+
+### 4-1. 여전히 불변인 안전 규칙
+- KIS 계좌 검증 순서: PAPER(모의) → REAL → ISA (절대 변경 금지).
+- 실전(REAL) 계좌로 나가는 자동 주문은 승인형 반자동만 허용 (제안 → 사용자 승인 → 실행).
 
 ### 5. 보안 규칙
 - `app_secret`, API 키, Telegram 토큰을 절대 로그에 남기지 않는다.
