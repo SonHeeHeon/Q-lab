@@ -1,0 +1,55 @@
+# qlab_alpha_v2 그룹 컴포지트 전략 — 구조 예제.
+#
+# 개인 튜닝 가중치는 커밋되지 않는 research/strategies/private/ 에 두세요:
+#   cp research/strategies/examples/qlab_alpha_v2.example.yaml \
+#      research/strategies/private/qlab_alpha_v2.yaml
+# private/에 같은 이름의 파일이 있으면 백엔드가 그것을 우선 사용합니다.
+# 아래 가중치는 중립(균등) 값이며 예제일 뿐, 튜닝된 값이 아닙니다.
+
+name: qlab_alpha_v2
+description: >-
+  4그룹 컴포지트(Value/Quality/Momentum/Flow) 예제 — robust 전처리
+  (winsorize→z→clip) + 커버리지 페널티. 가중치는 walk-forward로 직접 튜닝하세요
+  (research/backtest/walk_forward.py, optimize_trials>0).
+universe: KOSPI200
+rebalance_freq: QUARTERLY
+top_n: 20
+start_date: 2016-07-01
+end_date: 2025-12-31
+
+factors: []
+
+filters:
+  - field: market_cap
+    op: GTE
+    value: 100000000000
+  - field: trading_days_30d
+    op: GTE
+    value: 25
+
+groups:
+  - name: Value
+    weight: 0.25
+    factors:
+      - {factor: PER, higher_is_better: false}
+      - {factor: PBR, higher_is_better: false}
+  - name: Quality
+    weight: 0.25
+    factors:
+      - {factor: ROE, higher_is_better: true}
+      - {factor: ROA, higher_is_better: true}
+  - name: Momentum
+    weight: 0.25
+    factors:
+      - {factor: MOMENTUM_3M, higher_is_better: true}
+      - {factor: MOMENTUM_12M, higher_is_better: true}
+  - name: Flow
+    weight: 0.25
+    factors:
+      - {factor: FOREIGN_NET_20D, higher_is_better: true}
+      - {factor: INST_NET_20D, higher_is_better: true}
+
+min_groups: 3
+winsor_pct: 0.01
+clip_z: 3.0
+use_regime: false

@@ -17,6 +17,9 @@ from shared.db.session import research_db_path, service_session
 from shared.domain.strategy import StrategyDefinition
 
 STRATEGY_DIR = PROJECT_ROOT / "research" / "strategies"
+# Personal tuned strategies live here and are gitignored — resolved FIRST so
+# private equation weights never need to be committed for the app to use them.
+PRIVATE_STRATEGY_DIR = STRATEGY_DIR / "private"
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,9 +58,17 @@ async def run_daily_analysis(
 
 
 def load_strategy(strategy_name: str) -> StrategyDefinition:
-    path = STRATEGY_DIR / f"{strategy_name}.yaml"
-    if not path.exists():
-        raise FileNotFoundError(f"Strategy file not found: {path}")
+    """Load a strategy by name — private (gitignored) dir wins over public."""
+    candidates = [
+        PRIVATE_STRATEGY_DIR / f"{strategy_name}.yaml",
+        STRATEGY_DIR / f"{strategy_name}.yaml",
+    ]
+    path = next((p for p in candidates if p.exists()), None)
+    if path is None:
+        raise FileNotFoundError(
+            f"Strategy file not found: {strategy_name}.yaml "
+            f"(looked in private/ and {STRATEGY_DIR})"
+        )
     with path.open("r", encoding="utf-8") as file:
         payload = yaml.safe_load(file) or {}
     return StrategyDefinition.model_validate(payload)
