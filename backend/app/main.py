@@ -22,6 +22,7 @@ from backend.app.api.heatmap import router as heatmap_router
 from backend.app.api.performance import router as performance_router
 from backend.app.api.portfolio import router as portfolio_router
 from backend.app.api.principles import router as principles_router
+from backend.app.api.proposals import router as proposals_router
 from backend.app.api.quant import router as quant_router
 from backend.app.api.quotes import router as quotes_api_router
 from backend.app.api.settings import router as settings_router
@@ -226,6 +227,7 @@ app.include_router(alerts_router)
 app.include_router(performance_router)
 app.include_router(portfolio_router)
 app.include_router(principles_router)
+app.include_router(proposals_router)
 app.include_router(quant_router)
 app.include_router(quotes_api_router)
 app.include_router(settings_router)
