@@ -26,6 +26,7 @@ import '../presentation/home/home_screen.dart';
 import '../presentation/performance/performance_screen.dart';
 import '../presentation/portfolio/portfolio_screen.dart';
 import '../presentation/principles/principles_screen.dart';
+import '../presentation/proposals/proposals_screen.dart';
 import '../presentation/quant/backtest_lab/backtest_lab_screen.dart';
 import '../presentation/quant/backtest_lab/backtest_run_detail_screen.dart';
 import '../presentation/quant/builder/builder_screen.dart';
@@ -51,6 +52,7 @@ const navDestinations = <NavDestination>[
   NavDestination(path: '/watchlist', label: '관심종목', icon: Icons.star_border),
   NavDestination(path: '/trade-journal', label: '매매일지', icon: Icons.menu_book_outlined),
   NavDestination(path: '/alerts', label: '알림·자동매매', icon: Icons.notifications_active_outlined),
+  NavDestination(path: '/proposals', label: '오늘의 제안', icon: Icons.rule_folder_outlined),
   NavDestination(path: '/heatmap', label: '히트맵', icon: Icons.grid_view_outlined),
   NavDestination(path: '/quant', label: '퀀트', icon: Icons.analytics_outlined),
   NavDestination(path: '/performance', label: '성과분석', icon: Icons.show_chart),
@@ -83,6 +85,7 @@ final routerProvider = Provider<GoRouter>((ref) {
           GoRoute(path: '/watchlist', builder: (_, __) => const WatchlistScreen()),
           GoRoute(path: '/trade-journal', builder: (_, __) => const TradeJournalScreen()),
           GoRoute(path: '/alerts', builder: (_, __) => const AlertsScreen()),
+          GoRoute(path: '/proposals', builder: (_, __) => const ProposalsScreen()),
           GoRoute(path: '/heatmap', builder: (_, __) => const HeatmapScreen()),
           GoRoute(
             path: '/quant',
