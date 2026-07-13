@@ -61,3 +61,11 @@ use_regime: false
 # replace_if_rank_below: 0.4 # 점수 백분위 하위 40% 이탈 종목을 상위 미보유로 교체
 # take_profit_pct: 0.30      # 평단 대비 +30% 도달 시 전량 익절
 # stop_loss_pct: -0.15       # 평단 대비 -15% 도달 시 전량 손절(꼬리위험 가드)
+
+# 추가 팩터(선택) — 엔진에 구현돼 있어 그룹에 바로 넣을 수 있으나,
+# research/scripts/validate_factors.py 로 반드시 walk-forward OOS를 먼저 확인하세요.
+# Phase 4.3 KOSPI200 검증에서 아래 3종은 모두 개선 없음(팩터 동물원 교훈 — 기존
+# 4그룹이 이미 간결한 최적점). 새 데이터/유니버스에선 다시 검증할 것:
+#   INDIV_NET_20D (개인수급 역신호, higher_is_better:false) — 외국인+기관과 공선성 → OOS -0.07
+#   PSR (price/주당매출, false) / OP_MARGIN (영업이익률, true) — PER·ROE와 중복 → OOS 악화
+#   IDIO_MOM_3M/12M (시장조정 모멘텀) — z-score가 상수이동을 상쇄해 랭킹 불변(no-op)

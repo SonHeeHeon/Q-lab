@@ -145,6 +145,15 @@ def calculate_idio_momentum(
 
     If the market series is unavailable the market leg is 0 (degrades to plain
     momentum) rather than dropping every name.
+
+    ⚠️ CAVEAT (Phase 4.3 검증): the market return is the SAME constant for every
+    stock on a given day, and the grouped composite standardizes each factor with
+    a cross-sectional z-score. A constant shift is invariant under z-scoring, so
+    swapping MOMENTUM_→IDIO_MOM_ in qlab_alpha_v2 leaves the ranking BYTE-IDENTICAL
+    (verified: score diff ~2e-16). To get a real residual-momentum effect you need
+    PER-STOCK betas (stock − βᵢ·market), which reintroduces the estimation noise
+    this simple form was meant to avoid. Kept as a library factor for flat/non-
+    z-scored strategies; do not expect it to change the default composite.
     """
     stock_mom = calculate_momentum(
         codes, as_of=as_of, lookback_days=lookback_days, db_path=db_path
