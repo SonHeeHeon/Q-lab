@@ -82,3 +82,17 @@ class StrategyDefinition(BaseModel):
     # signal day (0 = same-day close, the optimistic default). lag=1 removes
     # the signal-day-close fill assumption entirely.
     execution_lag_days: int = 0
+
+    # --- Intra-period trade rules (Phase 4.2). All default OFF; each must be
+    # backtest-validated before use in the live proposal pipeline. ---
+    # Sell a holding back to its base weight once it drifts above
+    # base_weight × threshold (e.g. 1.4: a 5% target trimmed past 7%).
+    # Checked at month starts between rebalances.
+    band_trim_threshold: float | None = None
+    # Replace a holding whose composite-score percentile (1.0 = best) falls
+    # below this level with the best non-held name. Monthly check.
+    replace_if_rank_below: float | None = None
+    # Per-position exit vs volume-weighted entry price, checked daily on
+    # close: stop_loss_pct (e.g. -0.10) and/or take_profit_pct (e.g. 0.30).
+    stop_loss_pct: float | None = None
+    take_profit_pct: float | None = None

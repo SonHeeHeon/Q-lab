@@ -110,6 +110,7 @@ def run_backtest(
     pending_execute_index = -1
     applied_exposure = 1.0
     last_selected: list[str] = []
+    entry_prices: dict[str, float] = {}
     regime_series: dict = {}
     if strategy.use_regime:
         window_days = (trading_days[-1] - trading_days[0]).days + 500
@@ -121,29 +122,78 @@ def run_backtest(
         last_prices.update(daily_prices.get(current_day, {}))
         nav = _mark_to_market(cash, positions, last_prices)
 
-        def _execute(selected: list[str], exposure: float, day: Date) -> None:
+        def _apply_and_track(planned_trades: list[SimulatedTrade]) -> None:
+            """Single choke point for executing trades: applies them, keeps
+            volume-weighted entry prices current, and re-marks NAV."""
             nonlocal cash, nav
+            positions_before = dict(positions)
+            executed_trades, cash = _apply_trades(
+                cash, positions, planned_trades, warnings=warnings
+            )
+            _track_entry_prices(entry_prices, executed_trades, positions_before)
+            trades.extend(executed_trades)
+            nav = _mark_to_market(cash, positions, last_prices)
+
+        def _execute(selected: list[str], exposure: float, day: Date) -> None:
             target = _allocate_equal_weight(
                 selected,
                 nav=nav,
                 prices=last_prices,
                 exposure=exposure,
             )
-            rebalance_trades = rebalance(
-                current=positions,
-                target=target,
-                prices=last_prices,
-                trade_date=day,
-                cost_model=cost_model,
+            _apply_and_track(
+                rebalance(
+                    current=positions,
+                    target=target,
+                    prices=last_prices,
+                    trade_date=day,
+                    cost_model=cost_model,
+                )
             )
-            executed_trades, cash = _apply_trades(
-                cash,
-                positions,
-                rebalance_trades,
-                warnings=warnings,
-            )
-            trades.extend(executed_trades)
-            nav = _mark_to_market(cash, positions, last_prices)
+
+        # Daily per-position exits vs volume-weighted entry (stop / take-profit).
+        if (
+            strategy.stop_loss_pct is not None
+            or strategy.take_profit_pct is not None
+        ) and positions:
+            exit_rules: list[tuple[str, str, float]] = []
+            for code in list(positions):
+                entry = entry_prices.get(code)
+                price = last_prices.get(code)
+                if not entry or not price or entry <= 0:
+                    continue
+                position_return = price / entry - 1.0
+                if (
+                    strategy.stop_loss_pct is not None
+                    and position_return <= strategy.stop_loss_pct
+                ):
+                    exit_rules.append((code, "STOP_LOSS", position_return))
+                elif (
+                    strategy.take_profit_pct is not None
+                    and position_return >= strategy.take_profit_pct
+                ):
+                    exit_rules.append((code, "TAKE_PROFIT", position_return))
+            if exit_rules:
+                exit_codes = {code for code, _, _ in exit_rules}
+                for code, rule, position_return in exit_rules:
+                    _warn(
+                        warnings,
+                        f"{current_day} rule={rule} {code} ret={position_return:+.1%}",
+                    )
+                target = {
+                    code: qty
+                    for code, qty in positions.items()
+                    if code not in exit_codes
+                }
+                _apply_and_track(
+                    rebalance(
+                        current=positions,
+                        target=target,
+                        prices=last_prices,
+                        trade_date=current_day,
+                        cost_model=cost_model,
+                    )
+                )
 
         if pending_orders is not None and day_index >= pending_execute_index:
             lagged_selected, lagged_exposure = pending_orders
@@ -156,13 +206,15 @@ def run_backtest(
             last_rebalance_day,
             strategy.rebalance_freq,
         )
+        is_month_start = (
+            day_index > 0 and current_day.month != trading_days[day_index - 1].month
+        )
 
         if (
             strategy.use_regime
             and strategy.regime_check == "MONTHLY"
             and not is_rebalance
-            and day_index > 0
-            and current_day.month != trading_days[day_index - 1].month
+            and is_month_start
         ):
             confirmed = _confirmed_regime_exposure(
                 day_index, trading_days, regime_series
@@ -181,23 +233,114 @@ def run_backtest(
                         code: int(qty * ratio) for code, qty in positions.items()
                     }
                     target = {c: q for c, q in target.items() if q > 0}
-                    rebalance_trades = rebalance(
-                        current=positions,
-                        target=target,
-                        prices=last_prices,
-                        trade_date=current_day,
-                        cost_model=cost_model,
+                    _apply_and_track(
+                        rebalance(
+                            current=positions,
+                            target=target,
+                            prices=last_prices,
+                            trade_date=current_day,
+                            cost_model=cost_model,
+                        )
                     )
-                    executed_trades, cash = _apply_trades(
-                        cash, positions, rebalance_trades, warnings=warnings
-                    )
-                    trades.extend(executed_trades)
-                    nav = _mark_to_market(cash, positions, last_prices)
                 elif last_selected:
                     # Re-risk: rebuild toward the last selection at the new
                     # exposure (also handles recovery from 0%).
                     _execute(last_selected, new_exposure, current_day)
                 applied_exposure = new_exposure
+
+        # Monthly band trim: sell drifted winners back to their base weight.
+        if (
+            strategy.band_trim_threshold is not None
+            and not is_rebalance
+            and is_month_start
+            and positions
+        ):
+            trim_target = _band_trim_target(
+                positions,
+                last_prices,
+                nav=nav,
+                exposure=applied_exposure,
+                threshold=strategy.band_trim_threshold,
+            )
+            if trim_target is not None:
+                trimmed = {
+                    code
+                    for code, qty in trim_target.items()
+                    if qty < positions.get(code, 0)
+                }
+                _warn(
+                    warnings,
+                    f"{current_day} rule=BAND_TRIM {sorted(trimmed)}",
+                )
+                _apply_and_track(
+                    rebalance(
+                        current=positions,
+                        target=trim_target,
+                        prices=last_prices,
+                        trade_date=current_day,
+                        cost_model=cost_model,
+                    )
+                )
+
+        # Monthly score-exit swap: replace holdings whose composite-score
+        # percentile fell below the threshold with the best non-held names.
+        if (
+            strategy.replace_if_rank_below is not None
+            and not is_rebalance
+            and is_month_start
+            and positions
+        ):
+            universe = get_universe(strategy.universe, as_of=current_day, db_path=path)
+            scored = score_stocks(
+                universe,
+                strategy.factors,
+                as_of=current_day,
+                db_path=path,
+                warnings=warnings,
+                groups=strategy.groups,
+                min_groups=strategy.min_groups,
+                winsor_pct=strategy.winsor_pct,
+                clip_z=strategy.clip_z,
+            )
+            scored = apply_filters(
+                scored, strategy.filters,
+                as_of=current_day, db_path=path, warnings=warnings,
+            )
+            swaps = _score_exit_swaps(
+                list(scored.index), set(positions), strategy.replace_if_rank_below
+            )
+            if swaps:
+                swap_target = dict(positions)
+                for exit_code, replacement in swaps:
+                    exit_qty = swap_target.pop(exit_code, 0)
+                    exit_price = last_prices.get(exit_code)
+                    _warn(
+                        warnings,
+                        f"{current_day} rule=SCORE_EXIT {exit_code}→{replacement}",
+                    )
+                    if replacement is None or not exit_price:
+                        continue
+                    replacement_price = last_prices.get(replacement)
+                    if not replacement_price or replacement_price <= 0:
+                        continue
+                    # Haircut the sale proceeds for round-trip costs
+                    # (slippage+commission+tax) so the replacement BUY never
+                    # dies on an insufficient-cash skip.
+                    budget = exit_qty * exit_price * 0.99
+                    qty = int(budget // replacement_price)
+                    if qty > 0:
+                        swap_target[replacement] = (
+                            swap_target.get(replacement, 0) + qty
+                        )
+                _apply_and_track(
+                    rebalance(
+                        current=positions,
+                        target=swap_target,
+                        prices=last_prices,
+                        trade_date=current_day,
+                        cost_model=cost_model,
+                    )
+                )
 
         if is_rebalance:
             universe = get_universe(strategy.universe, as_of=current_day, db_path=path)
@@ -652,6 +795,95 @@ def _index_membership_universe(
     if file_codes:
         return file_codes
     return []
+
+
+def _track_entry_prices(
+    entry_prices: dict[str, float],
+    executed_trades: list[SimulatedTrade],
+    positions_before: dict[str, int],
+) -> None:
+    """Maintain volume-weighted entry prices across fills.
+
+    BUY blends the fill into the running average; a SELL that empties the
+    position clears its entry (a partial sell keeps the average — the basis
+    for stop/take-profit stays the original cost).
+    """
+    remaining = dict(positions_before)
+    for trade in executed_trades:
+        code = trade.code
+        prev_qty = remaining.get(code, 0)
+        if trade.side == "BUY":
+            prev_entry = entry_prices.get(code, trade.price)
+            total = prev_qty + trade.qty
+            if total > 0:
+                entry_prices[code] = (
+                    prev_qty * prev_entry + trade.qty * trade.price
+                ) / total
+            remaining[code] = total
+        else:
+            remaining[code] = prev_qty - trade.qty
+            if remaining[code] <= 0:
+                entry_prices.pop(code, None)
+
+
+def _band_trim_target(
+    positions: dict[str, int],
+    prices: dict[str, float],
+    *,
+    nav: float,
+    exposure: float,
+    threshold: float,
+) -> dict[str, int] | None:
+    """Target that trims holdings drifted above base_weight × threshold.
+
+    Base weight = the equal-weight share each current holding would get at the
+    applied exposure. Only trims (never tops up); returns None when nothing
+    breaches the band.
+    """
+    if not positions or nav <= 0 or threshold <= 1.0:
+        return None
+    effective_exposure = exposure if exposure > 0 else 1.0
+    base_weight = effective_exposure * INVESTABLE_NAV_RATIO / len(positions)
+    target = dict(positions)
+    trimmed = False
+    for code, qty in positions.items():
+        price = prices.get(code)
+        if not price or price <= 0:
+            continue
+        weight = qty * price / nav
+        if weight > base_weight * threshold:
+            target[code] = int(base_weight * nav / price)
+            trimmed = True
+    return target if trimmed else None
+
+
+def _score_exit_swaps(
+    ranked_codes: list[str],
+    held: set[str],
+    rank_below: float,
+) -> list[tuple[str, str | None]]:
+    """(exit, replacement) pairs for held names whose score percentile
+    (1.0 = best) fell below ``rank_below``.
+
+    Held names absent from the ranking (no data that day) are left alone —
+    a data gap must not force a sale. Replacements are the best-ranked
+    non-held names, one per exit, None when the bench runs dry.
+    """
+    n = len(ranked_codes)
+    if n < 2 or not held:
+        return []
+    percentile = {
+        code: 1.0 - index / (n - 1) for index, code in enumerate(ranked_codes)
+    }
+    exits = [
+        code for code in ranked_codes
+        if code in held and percentile[code] < rank_below
+    ]
+    bench = [code for code in ranked_codes if code not in held]
+    return [
+        (exit_code, bench[i] if i < len(bench) else None)
+        for i, exit_code in enumerate(exits)
+    ]
 
 
 def _confirmed_regime_exposure(
