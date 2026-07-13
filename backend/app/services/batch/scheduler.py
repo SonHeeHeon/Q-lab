@@ -13,6 +13,10 @@ from backend.app.services.batch.broker_order_sync import run_broker_order_sync
 from backend.app.services.batch.daily_analysis import run_daily_analysis
 from backend.app.services.batch.daily_report import run_daily_report
 from backend.app.services.batch.data_sync import run_data_sync
+from backend.app.services.batch.proposal_generator import (
+    run_proposal_expiry,
+    run_proposal_generation,
+)
 from backend.app.services.batch.record_nav_snapshot import run_nav_snapshot
 
 logger = logging.getLogger(__name__)
@@ -59,6 +63,22 @@ def create_batch_scheduler() -> AsyncIOScheduler:
         run_data_sync,
         CronTrigger.from_crontab(settings.DATA_SYNC_CRON, timezone=timezone),
         id="data_sync",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        run_proposal_generation,
+        CronTrigger.from_crontab(settings.PROPOSAL_CRON, timezone=timezone),
+        id="proposal_generation",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        run_proposal_expiry,
+        CronTrigger.from_crontab(settings.PROPOSAL_EXPIRY_CRON, timezone=timezone),
+        id="proposal_expiry",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

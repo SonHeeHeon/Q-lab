@@ -151,6 +151,10 @@ class Settings(BaseSettings):
     DATA_SYNC_CRON: str = "0 18 * * MON-FRI"
     BROKER_ORDER_SYNC_CRON: str = "10 16 * * MON-FRI"
     NAV_SNAPSHOT_CRON: str = "20 16 * * MON-FRI"
+    # 승인형 반자동: 제안 생성(data_sync 18:00 이후) / 미승인 제안 만료(개장 전)
+    PROPOSAL_CRON: str = "40 18 * * MON-FRI"
+    PROPOSAL_EXPIRY_CRON: str = "30 8 * * MON-FRI"
+    PROPOSAL_ACCOUNT_TYPE: AccountType = AccountType.PAPER
     BROKER_ORDER_SYNC_LOOKBACK_DAYS: int = 7
     BROKER_ORDER_SYNC_ACCOUNTS: str = "PAPER,REAL,ISA"
     DEFAULT_STRATEGY_NAME: str = "value_v1"

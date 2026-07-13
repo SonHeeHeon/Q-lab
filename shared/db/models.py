@@ -262,6 +262,57 @@ class Setting(ServiceBase):
     )
 
 
+class OrderProposal(ServiceBase):
+    """One proposed trade from the approval-based semi-auto pipeline.
+
+    The daily generator diffs the strategy's target portfolio against current
+    holdings and writes proposals; the user approves in-app. Approval mints a
+    ``client_order_id`` (idempotency key) and routes through the same safety
+    gateway as manual orders. Status flow:
+    PROPOSED → APPROVED → SUBMITTED → FILLED | REJECTED | EXPIRED | FAILED.
+    """
+
+    __tablename__ = "order_proposals"
+    __table_args__ = {"sqlite_autoincrement": True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    batch_id: Mapped[str] = mapped_column(Text, nullable=False)
+    proposal_date: Mapped[date] = mapped_column(Date, nullable=False)
+    account_type: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'PAPER'")
+    )
+    strategy_name: Mapped[str] = mapped_column(Text, nullable=False)
+    config_hash: Mapped[str | None] = mapped_column(Text)
+    stock_code: Mapped[str] = mapped_column(Text, nullable=False)
+    market: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'KR'")
+    )
+    side: Mapped[str] = mapped_column(Text, nullable=False)  # BUY | SELL
+    qty: Mapped[int] = mapped_column(Integer, nullable=False)
+    order_type: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'LIMIT'")
+    )
+    limit_price: Mapped[Decimal | None] = mapped_column(Numeric)
+    last_price: Mapped[Decimal | None] = mapped_column(Numeric)
+    estimated_notional: Mapped[Decimal | None] = mapped_column(Numeric)
+    reason_json: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'PROPOSED'")
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime)
+    client_order_id: Mapped[str | None] = mapped_column(Text)
+    trade_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("trades.id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
 class PortfolioSnapshot(ServiceBase):
     """Daily portfolio NAV per account for performance tracking.
 
@@ -414,6 +465,17 @@ Index(
     "idx_snapshots_account_date",
     PortfolioSnapshot.account_type,
     PortfolioSnapshot.date.desc(),
+)
+Index(
+    "idx_proposals_status_date",
+    OrderProposal.status,
+    OrderProposal.proposal_date.desc(),
+)
+Index("idx_proposals_batch", OrderProposal.batch_id)
+Index(
+    "idx_proposals_client_order_id",
+    OrderProposal.client_order_id,
+    unique=True,
 )
 Index(
     "idx_batch_date",
