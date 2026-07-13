@@ -53,3 +53,11 @@ min_groups: 3
 winsor_pct: 0.01
 clip_z: 3.0
 use_regime: false
+
+# 중간매매 규칙(선택) — 분기 리밸런스 사이에 조건부 매도/교체를 넣는다.
+# research/scripts/validate_rules.py 로 각 규칙의 Sharpe/MDD 영향을 먼저 검증하세요.
+# (KOSPI200 검증 결과: band_trim_1.4만 전 구간 개선, 나머지는 상황별 상충)
+# band_trim_threshold: 1.4   # 목표비중의 140% 초과 종목을 목표치로 트림
+# replace_if_rank_below: 0.4 # 점수 백분위 하위 40% 이탈 종목을 상위 미보유로 교체
+# take_profit_pct: 0.30      # 평단 대비 +30% 도달 시 전량 익절
+# stop_loss_pct: -0.15       # 평단 대비 -15% 도달 시 전량 손절(꼬리위험 가드)
