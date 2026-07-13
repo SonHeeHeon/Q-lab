@@ -43,6 +43,22 @@ def calculate_inst_net_20d(
     return _flow_strength(codes, as_of=as_of, db_path=db_path, column="inst_net")
 
 
+def calculate_indiv_net_20d(
+    codes: Iterable[str],
+    *,
+    as_of: Date,
+    db_path: Path | None = None,
+) -> pd.Series:
+    """20-day cumulative individual (retail) net purchase ÷ market cap.
+
+    KR literature treats retail flow as the noise-trader side (daily corr with
+    returns ≈ −0.7), so strategies typically use it as a NEGATIVE signal —
+    wire it with ``higher_is_better: false`` in a group spec.
+    """
+
+    return _flow_strength(codes, as_of=as_of, db_path=db_path, column="indiv_net")
+
+
 def _flow_strength(
     codes: Iterable[str],
     *,

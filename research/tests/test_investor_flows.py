@@ -16,7 +16,11 @@ import pytest
 
 from research.backtest.engine import _factor_series
 from research.data_ingestion.pykrx_loader import _investor_flow_rows_from_frame
-from research.factors.flows import calculate_foreign_net_20d, calculate_inst_net_20d
+from research.factors.flows import (
+    calculate_foreign_net_20d,
+    calculate_indiv_net_20d,
+    calculate_inst_net_20d,
+)
 
 AS_OF = date(2026, 6, 30)
 
@@ -67,6 +71,21 @@ def test_inst_strength_negative_for_net_selling(tmp_path: Path) -> None:
     db = _make_db(tmp_path)
     series = calculate_inst_net_20d(["000001"], as_of=AS_OF, db_path=db)
     assert series["000001"] == pytest.approx(-0.01)  # 20 × -5e8 ÷ 1e12
+
+
+def test_indiv_strength_negative_for_net_selling(tmp_path: Path) -> None:
+    # 개인 순매도(-5e8/day) fixture → 음수 강도. 역신호 팩터의 원시값 방향 검증.
+    db = _make_db(tmp_path)
+    series = calculate_indiv_net_20d(["000001"], as_of=AS_OF, db_path=db)
+    assert series["000001"] == pytest.approx(-0.01)  # 20 × -5e8 ÷ 1e12
+
+
+def test_engine_dispatch_indiv_flow_factor(tmp_path: Path) -> None:
+    db = _make_db(tmp_path)
+    series = _factor_series(
+        "INDIV_NET_20D", ["000001"], as_of=AS_OF, db_path=db, warnings=[]
+    )
+    assert series["000001"] == pytest.approx(-0.01)
 
 
 def test_na_without_market_cap_normalizer(tmp_path: Path) -> None:

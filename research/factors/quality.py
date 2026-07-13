@@ -58,9 +58,26 @@ def calculate_quality_factors(
     frame = frame.join(financials)
     frame["ROE"] = _safe_divide(frame["net_income_ttm"], frame["total_equity"])
     frame["ROA"] = _safe_divide(frame["net_income_ttm"], frame["total_assets"])
+    # OP_MARGIN = 영업이익(TTM) / 매출(TTM) — 순수 비율, price/shares 불필요.
+    frame["OP_MARGIN"] = _safe_divide(
+        frame["operating_income_ttm"], frame["revenue_ttm"]
+    )
     frame.loc[frame["total_equity"] <= 0, "ROE"] = pd.NA
     frame.loc[frame["total_assets"] <= 0, "ROA"] = pd.NA
-    return frame[["ROE", "ROA"]]
+    frame.loc[(frame["revenue_ttm"] <= 0).fillna(False), "OP_MARGIN"] = pd.NA
+    return frame[["ROE", "ROA", "OP_MARGIN"]]
+
+
+def calculate_op_margin(
+    codes: Iterable[str],
+    *,
+    as_of: Date,
+    db_path: Path | None = None,
+) -> pd.Series:
+    """OP_MARGIN = operating_income(TTM) / revenue(TTM)."""
+
+    frame = calculate_quality_factors(codes, as_of=as_of, db_path=db_path)
+    return frame["OP_MARGIN"] if "OP_MARGIN" in frame else pd.Series(dtype="float64")
 
 
 def _ttm_financials(
@@ -92,7 +109,10 @@ def _ttm_financials(
     if not frames:
         return pd.DataFrame(
             index=pd.Index([], name="stock_code"),
-            columns=["net_income_ttm", "total_equity", "total_assets"],
+            columns=[
+                "net_income_ttm", "total_equity", "total_assets",
+                "revenue_ttm", "operating_income_ttm",
+            ],
         )
     return pd.concat(frames).sort_index()
 
@@ -129,7 +149,10 @@ def _ttm_financials_from_table(
     if latest.empty:
         return pd.DataFrame(
             index=pd.Index([], name="stock_code"),
-            columns=["net_income_ttm", "total_equity", "total_assets"],
+            columns=[
+                "net_income_ttm", "total_equity", "total_assets",
+                "revenue_ttm", "operating_income_ttm",
+            ],
         )
     latest_frame = latest.set_index("stock_code")
 
@@ -140,7 +163,18 @@ def _ttm_financials_from_table(
     latest_frame["net_income_ttm"] = latest_frame["net_income_ttm"].fillna(
         latest_frame["net_income"]
     )
-    return latest_frame[["net_income_ttm", "total_equity", "total_assets"]].astype(float)
+    # 매출·영업이익도 같은 TTM 로직으로 합산(OP_MARGIN·PSR 소스). 결측은 그대로 NaN.
+    for column, out in (("revenue", "revenue_ttm"),
+                        ("operating_income", "operating_income_ttm")):
+        series = flow_ttm_series(
+            conn, table_name, code_column, codes, as_of,
+            column=column, mixed_annual=mixed_annual,
+        )
+        latest_frame[out] = series.reindex(latest_frame.index)
+    return latest_frame[[
+        "net_income_ttm", "total_equity", "total_assets",
+        "revenue_ttm", "operating_income_ttm",
+    ]].astype(float)
 
 
 def net_income_ttm_series(
@@ -152,7 +186,24 @@ def net_income_ttm_series(
     *,
     mixed_annual: bool,
 ) -> pd.Series:
-    """Trailing-12-month net income per stock, point-in-time at ``as_of``.
+    """Trailing-12-month net income per stock (thin wrapper over flow_ttm_series)."""
+    return flow_ttm_series(
+        conn, table_name, code_column, codes, as_of,
+        column="net_income", mixed_annual=mixed_annual,
+    )
+
+
+def flow_ttm_series(
+    conn: sqlite3.Connection,
+    table_name: str,
+    code_column: str,
+    codes: list[str],
+    as_of: Date,
+    *,
+    column: str,
+    mixed_annual: bool,
+) -> pd.Series:
+    """Trailing-12-month sum of a flow line item (net_income/revenue/operating_income).
 
     mixed_annual=True (KR/DART): rows mix 12-month annual reports with 3-month
     interim reports of the same fiscal year, so summing the last 4 disclosures
@@ -163,15 +214,21 @@ def net_income_ttm_series(
 
     mixed_annual=False (US/yfinance): rows are uniform quarterly flows; TTM is
     simply the sum of the last ≤4 rows.
+
+    Returns an empty Series if ``column`` is absent from the table (the US
+    financials table is created ad-hoc; older/test schemas may lack revenue or
+    operating_income — same tolerance as the ``NULL AS col`` value-factor guard).
     """
+    if column not in _table_columns(conn, table_name):
+        return pd.Series(dtype="float64")
     placeholders = ",".join("?" for _ in codes)
     sql = f"""
-        SELECT stock_code, fiscal_period, net_income
+        SELECT stock_code, fiscal_period, {column} AS flow
         FROM (
             SELECT
                 {code_column} AS stock_code,
                 fiscal_period,
-                net_income,
+                {column},
                 ROW_NUMBER() OVER (
                     PARTITION BY {code_column}
                     ORDER BY disclosed_at DESC, fiscal_period DESC, id DESC
@@ -179,7 +236,7 @@ def net_income_ttm_series(
             FROM {table_name}
             WHERE {code_column} IN ({placeholders})
               AND disclosed_at <= ?
-              AND net_income IS NOT NULL
+              AND {column} IS NOT NULL
         )
         WHERE rn <= 12
     """
@@ -189,7 +246,7 @@ def net_income_ttm_series(
 
     if not mixed_annual:
         recent = rows.groupby("stock_code").head(4)
-        return recent.groupby("stock_code")["net_income"].sum().astype(float)
+        return recent.groupby("stock_code")["flow"].sum().astype(float)
 
     values: dict[str, float] = {}
     for code, group in rows.groupby("stock_code"):
@@ -205,7 +262,7 @@ def _reconstruct_ttm(group: pd.DataFrame) -> float | None:
     annuals: dict[int, float] = {}
     for _, row in group.iterrows():
         period = pd.Timestamp(row["fiscal_period"])
-        value = float(row["net_income"])
+        value = float(row["flow"])
         if period.month == 12:
             annuals[period.year] = value
         elif period.month in (3, 6, 9):
@@ -235,6 +292,11 @@ def _reconstruct_ttm(group: pd.DataFrame) -> float | None:
         # Young listing: only interim flows exist; sum what there is (≤4).
         return float(sum(value for _, value in ordered[:4]))
     return None
+
+
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {str(row[1]) for row in rows}
 
 
 def _safe_divide(numerator: pd.Series, denominator: pd.Series) -> pd.Series:

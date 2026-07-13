@@ -10,7 +10,7 @@ from pathlib import Path
 import pandas as pd
 
 from research.factors.common import normalize_codes, split_korean_and_global, table_exists
-from research.factors.quality import net_income_ttm_series
+from research.factors.quality import flow_ttm_series, net_income_ttm_series
 from shared.db.session import research_db_path
 
 
@@ -38,6 +38,18 @@ def calculate_pbr(
     return frame["PBR"] if "PBR" in frame else pd.Series(dtype="float64")
 
 
+def calculate_psr(
+    codes: Iterable[str],
+    *,
+    as_of: Date,
+    db_path: Path | None = None,
+) -> pd.Series:
+    """PSR = price / sales-per-share (revenue TTM basis). The sales analog of PER."""
+
+    frame = calculate_value_factors(codes, as_of=as_of, db_path=db_path)
+    return frame["PSR"] if "PSR" in frame else pd.Series(dtype="float64")
+
+
 def calculate_value_factors(
     codes: Iterable[str],
     *,
@@ -55,12 +67,14 @@ def calculate_value_factors(
         prices = _latest_prices(conn, normalized_codes, as_of)
         financials = _latest_financials(conn, normalized_codes, as_of)
         ttm = _net_income_ttm(conn, normalized_codes, as_of)
+        revenue_ttm = _flow_ttm(conn, normalized_codes, as_of, column="revenue")
 
     frame = pd.DataFrame(index=normalized_codes)
     frame.index.name = "code"
     frame["price"] = prices
     frame = frame.join(financials)
     frame["net_income_ttm"] = ttm.reindex(frame.index)
+    frame["revenue_ttm"] = revenue_ttm.reindex(frame.index)
 
     shares = _share_estimate(frame)
     frame["bps"] = _fill_bps_from_equity(frame, shares)
@@ -71,9 +85,14 @@ def calculate_value_factors(
     eps_basis = eps_ttm.where(eps_ttm.notna(), pd.to_numeric(frame["eps"], errors="coerce"))
     frame["PER"] = _safe_divide(frame["price"], eps_basis)
     frame["PBR"] = _safe_divide(frame["price"], frame["bps"])
+    # PSR = price / (revenue_ttm / shares). Same share basis as PER/PBR, so it
+    # never mixes 3-month and 12-month sales; non-positive revenue → NA.
+    sps = _safe_divide(frame["revenue_ttm"], shares)
+    frame["PSR"] = _safe_divide(frame["price"], sps)
     frame.loc[(eps_basis <= 0).fillna(False), "PER"] = pd.NA
     frame.loc[(frame["bps"] <= 0).fillna(False), "PBR"] = pd.NA
-    return frame[["PER", "PBR"]]
+    frame.loc[(sps <= 0).fillna(False), "PSR"] = pd.NA
+    return frame[["PER", "PBR", "PSR"]]
 
 
 def _net_income_ttm(
@@ -81,22 +100,34 @@ def _net_income_ttm(
     codes: list[str],
     as_of: Date,
 ) -> pd.Series:
+    return _flow_ttm(conn, codes, as_of, column="net_income")
+
+
+def _flow_ttm(
+    conn: sqlite3.Connection,
+    codes: list[str],
+    as_of: Date,
+    *,
+    column: str,
+) -> pd.Series:
+    """TTM sum of a flow line item across KR + US financials, point-in-time."""
     korean_codes, global_codes = split_korean_and_global(codes)
     parts: list[pd.Series] = []
     if korean_codes and table_exists(conn, "financials"):
         parts.append(
-            net_income_ttm_series(
+            flow_ttm_series(
                 conn, "financials", "stock_code", korean_codes, as_of,
-                mixed_annual=True,
+                column=column, mixed_annual=True,
             )
         )
     if global_codes and table_exists(conn, "financials_us"):
         parts.append(
-            net_income_ttm_series(
+            flow_ttm_series(
                 conn, "financials_us", "ticker", global_codes, as_of,
-                mixed_annual=False,
+                column=column, mixed_annual=False,
             )
         )
+    parts = [p for p in parts if not p.empty]
     if not parts:
         return pd.Series(dtype="float64")
     return pd.concat(parts).sort_index()

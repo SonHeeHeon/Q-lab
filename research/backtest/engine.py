@@ -18,16 +18,23 @@ from research.backtest.simulator import (
     default_cost_model_for_universe,
     rebalance,
 )
-from research.factors.momentum import calculate_named_momentum
+from research.factors.momentum import (
+    calculate_named_idio_momentum,
+    calculate_named_momentum,
+)
 from research.factors.common import (
     normalize_code,
     normalize_codes,
     split_korean_and_global,
     table_exists,
 )
-from research.factors.flows import calculate_foreign_net_20d, calculate_inst_net_20d
-from research.factors.quality import calculate_roa, calculate_roe
-from research.factors.value import calculate_pbr, calculate_per
+from research.factors.flows import (
+    calculate_foreign_net_20d,
+    calculate_indiv_net_20d,
+    calculate_inst_net_20d,
+)
+from research.factors.quality import calculate_op_margin, calculate_roa, calculate_roe
+from research.factors.value import calculate_pbr, calculate_per, calculate_psr
 from research.factors.volume import calculate_trading_days_30d, calculate_volume_spike
 from research.universe.kosdaq150 import KOSDAQ150_CODES_FILE
 from research.universe.kospi200 import DEFAULT_CODES_FILE
@@ -640,10 +647,21 @@ def _factor_series(
             return calculate_per(codes, as_of=as_of, db_path=db_path)
         if factor_name == "PBR":
             return calculate_pbr(codes, as_of=as_of, db_path=db_path)
+        if factor_name == "PSR":
+            return calculate_psr(codes, as_of=as_of, db_path=db_path)
         if factor_name == "ROE":
             return calculate_roe(codes, as_of=as_of, db_path=db_path)
         if factor_name == "ROA":
             return calculate_roa(codes, as_of=as_of, db_path=db_path)
+        if factor_name == "OP_MARGIN":
+            return calculate_op_margin(codes, as_of=as_of, db_path=db_path)
+        if factor_name.startswith("IDIO_MOM_"):
+            return calculate_named_idio_momentum(
+                factor_name,
+                codes,
+                as_of=as_of,
+                db_path=db_path,
+            )
         if factor_name.startswith("MOMENTUM_"):
             return calculate_named_momentum(
                 factor_name,
@@ -657,6 +675,8 @@ def _factor_series(
             return calculate_foreign_net_20d(codes, as_of=as_of, db_path=db_path)
         if factor_name == "INST_NET_20D":
             return calculate_inst_net_20d(codes, as_of=as_of, db_path=db_path)
+        if factor_name == "INDIV_NET_20D":
+            return calculate_indiv_net_20d(codes, as_of=as_of, db_path=db_path)
         if factor_name == "VOLUME_SPIKE":
             return calculate_volume_spike(codes, as_of=as_of, db_path=db_path)
         if factor_name == "MARKET_CAP":
