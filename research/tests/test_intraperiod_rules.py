@@ -221,3 +221,83 @@ def test_score_exit_swap_at_month_start(monkeypatch, patched):
         for t in result.trades
     )
     assert any("rule=SCORE_EXIT 000002→000003" in w for w in result.warnings)
+
+
+# --- logic-based trade reasons (Phase 4.4) -----------------------------------
+
+def test_rebalance_reason_carries_rank_and_score(patched):
+    db, _days = patched
+    result = eng.run_backtest(_strategy(), db_path=db)
+    buys = {t.code: t.reason for t in result.trades if t.side == "BUY"}
+    # Selection is [000002 (score 2), 000001 (score 1)] → ranks 1 and 2.
+    assert buys["000002"]["rule"] == "REBALANCE_IN"
+    assert buys["000002"]["rank"] == 1 and buys["000002"]["score"] == 2.0
+    assert buys["000001"]["rank"] == 2 and buys["000001"]["score"] == 1.0
+
+
+def test_take_profit_reason(patched):
+    db, _days = patched
+    result = eng.run_backtest(_strategy(take_profit_pct=0.5), db_path=db)
+    tp = next(t for t in result.trades if t.side == "SELL" and t.code == "000002")
+    assert tp.reason["rule"] == "TAKE_PROFIT"
+    assert tp.reason["return"] >= 0.5  # +~200% at the exit
+
+
+def test_stop_loss_reason(monkeypatch, patched):
+    db, _days = patched
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "UPDATE prices_daily SET close=50.0 WHERE stock_code='000002' AND date>=?",
+            (date(2026, 2, 2).isoformat(),),
+        )
+    result = eng.run_backtest(_strategy(stop_loss_pct=-0.10), db_path=db)
+    sl = next(t for t in result.trades if t.side == "SELL" and t.code == "000002")
+    assert sl.reason["rule"] == "STOP_LOSS"
+    assert sl.reason["return"] <= -0.10
+
+
+def test_band_trim_reason(patched):
+    db, _days = patched
+    result = eng.run_backtest(_strategy(band_trim_threshold=1.3), db_path=db)
+    trim = next(
+        t for t in result.trades
+        if t.side == "SELL" and t.code == "000002" and t.date == date(2026, 2, 2)
+    )
+    assert trim.reason["rule"] == "BAND_TRIM"
+
+
+def test_score_exit_reason_links_exit_and_replacement(monkeypatch, patched):
+    db, _days = patched
+    frames = {
+        "initial": pd.DataFrame(
+            {"score": [2.0, 1.0]}, index=pd.Index(["000002", "000001"], name="code")
+        ),
+        "later": pd.DataFrame(
+            {"score": [3.0, 2.0, 0.1]},
+            index=pd.Index(["000003", "000001", "000002"], name="code"),
+        ),
+    }
+    calls = {"n": 0}
+
+    def fake_scores(*a, **k):
+        calls["n"] += 1
+        return (frames["initial"] if calls["n"] == 1 else frames["later"]).copy()
+
+    monkeypatch.setattr(eng, "score_stocks", fake_scores)
+    with sqlite3.connect(db) as conn:
+        for d in _weekdays(date(2026, 1, 2), date(2026, 3, 31)):
+            conn.execute(
+                "INSERT INTO prices_daily VALUES ('000003', ?, 200.0, NULL)",
+                (d.isoformat(),),
+            )
+    result = eng.run_backtest(_strategy(replace_if_rank_below=0.4), db_path=db)
+    exit_sell = next(
+        t for t in result.trades if t.side == "SELL" and t.code == "000002"
+        and t.date == date(2026, 2, 2)
+    )
+    repl_buy = next(
+        t for t in result.trades if t.side == "BUY" and t.code == "000003"
+        and t.date == date(2026, 2, 2)
+    )
+    assert exit_sell.reason == {"rule": "SCORE_EXIT", "replaced_by": "000003"}
+    assert repl_buy.reason == {"rule": "SCORE_EXIT_REPLACE", "replaces": "000002"}

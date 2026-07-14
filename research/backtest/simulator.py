@@ -45,6 +45,16 @@ class SimulatedTrade(BaseModel):
     cash_flow: float = Field(
         description="Positive for sell proceeds, negative for buy cash usage."
     )
+    reason: dict | None = Field(
+        default=None,
+        description=(
+            "Logic-based (non-LLM) reason for this trade — mirrors the "
+            "order_proposals rule vocabulary: {'rule': 'REBALANCE_IN'|"
+            "'REBALANCE_OUT'|'STOP_LOSS'|'TAKE_PROFIT'|'BAND_TRIM'|'SCORE_EXIT'|"
+            "'SCORE_EXIT_REPLACE'|'REGIME_DERISK'|'REGIME_RERISK', ...}. Stamped "
+            "by the engine at each generation site; None if untagged."
+        ),
+    )
 
 
 def execute_trade(

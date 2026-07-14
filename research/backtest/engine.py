@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import re
+from collections.abc import Callable
 from datetime import date as Date
 from pathlib import Path
 from typing import Literal
@@ -113,7 +114,7 @@ def run_backtest(
     equity_curve: list[EquityPoint] = []
     last_rebalance_day: Date | None = None
 
-    pending_orders: tuple[list[str], float] | None = None
+    pending_orders: tuple[list[str], float, Callable] | None = None
     pending_execute_index = -1
     applied_exposure = 1.0
     last_selected: list[str] = []
@@ -129,19 +130,33 @@ def run_backtest(
         last_prices.update(daily_prices.get(current_day, {}))
         nav = _mark_to_market(cash, positions, last_prices)
 
-        def _apply_and_track(planned_trades: list[SimulatedTrade]) -> None:
-            """Single choke point for executing trades: applies them, keeps
-            volume-weighted entry prices current, and re-marks NAV."""
+        def _apply_and_track(
+            planned_trades: list[SimulatedTrade],
+            reason_for: "Callable[[SimulatedTrade], dict | None] | None" = None,
+        ) -> None:
+            """Single choke point for executing trades: applies them, stamps a
+            logic-based reason on each, keeps volume-weighted entry prices
+            current, and re-marks NAV."""
             nonlocal cash, nav
             positions_before = dict(positions)
             executed_trades, cash = _apply_trades(
                 cash, positions, planned_trades, warnings=warnings
             )
+            if reason_for is not None:
+                for executed in executed_trades:
+                    tagged = reason_for(executed)
+                    if tagged is not None:
+                        executed.reason = tagged
             _track_entry_prices(entry_prices, executed_trades, positions_before)
             trades.extend(executed_trades)
             nav = _mark_to_market(cash, positions, last_prices)
 
-        def _execute(selected: list[str], exposure: float, day: Date) -> None:
+        def _execute(
+            selected: list[str],
+            exposure: float,
+            day: Date,
+            reason_for: "Callable[[SimulatedTrade], dict | None] | None" = None,
+        ) -> None:
             target = _allocate_equal_weight(
                 selected,
                 nav=nav,
@@ -155,7 +170,8 @@ def run_backtest(
                     prices=last_prices,
                     trade_date=day,
                     cost_model=cost_model,
-                )
+                ),
+                reason_for=reason_for,
             )
 
         # Daily per-position exits vs volume-weighted entry (stop / take-profit).
@@ -182,6 +198,10 @@ def run_backtest(
                     exit_rules.append((code, "TAKE_PROFIT", position_return))
             if exit_rules:
                 exit_codes = {code for code, _, _ in exit_rules}
+                exit_reason = {
+                    code: {"rule": rule, "return": round(position_return, 4)}
+                    for code, rule, position_return in exit_rules
+                }
                 for code, rule, position_return in exit_rules:
                     _warn(
                         warnings,
@@ -199,13 +219,17 @@ def run_backtest(
                         prices=last_prices,
                         trade_date=current_day,
                         cost_model=cost_model,
-                    )
+                    ),
+                    reason_for=lambda t: exit_reason.get(t.code),
                 )
 
         if pending_orders is not None and day_index >= pending_execute_index:
-            lagged_selected, lagged_exposure = pending_orders
+            lagged_selected, lagged_exposure, lagged_reason = pending_orders
             pending_orders = None
-            _execute(lagged_selected, lagged_exposure, current_day)
+            _execute(
+                lagged_selected, lagged_exposure, current_day,
+                reason_for=lagged_reason,
+            )
             applied_exposure = lagged_exposure
 
         is_rebalance = _is_rebalance_day(
@@ -233,6 +257,7 @@ def run_backtest(
                     f"{current_day} regime-adjust {applied_exposure:.0%}"
                     f"→{new_exposure:.0%} ({label})",
                 )
+                regime_from, regime_to = applied_exposure, new_exposure
                 if new_exposure < applied_exposure and applied_exposure > 0:
                     # De-risk in place: shrink every holding proportionally.
                     ratio = new_exposure / applied_exposure
@@ -247,12 +272,25 @@ def run_backtest(
                             prices=last_prices,
                             trade_date=current_day,
                             cost_model=cost_model,
-                        )
+                        ),
+                        reason_for=lambda t: {
+                            "rule": "REGIME_DERISK",
+                            "from_exposure": round(regime_from, 2),
+                            "to_exposure": round(regime_to, 2),
+                            "label": label,
+                        },
                     )
                 elif last_selected:
                     # Re-risk: rebuild toward the last selection at the new
                     # exposure (also handles recovery from 0%).
-                    _execute(last_selected, new_exposure, current_day)
+                    _execute(
+                        last_selected, new_exposure, current_day,
+                        reason_for=lambda t: {
+                            "rule": "REGIME_RERISK",
+                            "to_exposure": round(regime_to, 2),
+                            "label": label,
+                        },
+                    )
                 applied_exposure = new_exposure
 
         # Monthly band trim: sell drifted winners back to their base weight.
@@ -286,7 +324,11 @@ def run_backtest(
                         prices=last_prices,
                         trade_date=current_day,
                         cost_model=cost_model,
-                    )
+                    ),
+                    reason_for=lambda t: {
+                        "rule": "BAND_TRIM",
+                        "threshold": strategy.band_trim_threshold,
+                    },
                 )
 
         # Monthly score-exit swap: replace holdings whose composite-score
@@ -318,9 +360,14 @@ def run_backtest(
             )
             if swaps:
                 swap_target = dict(positions)
+                swap_reason: dict[str, dict] = {}
                 for exit_code, replacement in swaps:
                     exit_qty = swap_target.pop(exit_code, 0)
                     exit_price = last_prices.get(exit_code)
+                    swap_reason[exit_code] = {
+                        "rule": "SCORE_EXIT",
+                        "replaced_by": replacement,
+                    }
                     _warn(
                         warnings,
                         f"{current_day} rule=SCORE_EXIT {exit_code}→{replacement}",
@@ -339,6 +386,10 @@ def run_backtest(
                         swap_target[replacement] = (
                             swap_target.get(replacement, 0) + qty
                         )
+                        swap_reason[replacement] = {
+                            "rule": "SCORE_EXIT_REPLACE",
+                            "replaces": exit_code,
+                        }
                 _apply_and_track(
                     rebalance(
                         current=positions,
@@ -346,7 +397,8 @@ def run_backtest(
                         prices=last_prices,
                         trade_date=current_day,
                         cost_model=cost_model,
-                    )
+                    ),
+                    reason_for=lambda t: swap_reason.get(t.code),
                 )
 
         if is_rebalance:
@@ -371,6 +423,7 @@ def run_backtest(
             )
             selected = list(scored.head(strategy.top_n).index)
             exposure = 1.0
+            regime_label = None
             if strategy.use_regime:
                 regime = compute_regime(current_day, **regime_series)
                 exposure = regime.exposure
@@ -380,19 +433,43 @@ def run_backtest(
                     )
                     if confirmed is not None:
                         exposure = confirmed[0]
+                regime_label = regime.label
                 _warn(
                     warnings,
                     f"{current_day} regime={regime.label} "
                     f"exposure={exposure:.0%} R={regime.r_score:.2f}",
                 )
             last_selected = selected
+            # Logic-based reason per trade: entered top-N (with rank/score) vs
+            # dropped out of top-N. Rank map is bound per rebalance so a lagged
+            # fill keeps the signal-day ranking.
+            has_score = "score" in scored.columns
+            rank_by_code = {
+                code: (i + 1, float(scored.loc[code, "score"]) if has_score else None)
+                for i, code in enumerate(selected)
+                if code in scored.index
+            }
+
+            def _rebalance_reason(trade, ranks=rank_by_code, label=regime_label):
+                if trade.side == "BUY":
+                    entry = ranks.get(trade.code)
+                    reason: dict = {"rule": "REBALANCE_IN"}
+                    if entry is not None:
+                        reason["rank"] = entry[0]
+                        if entry[1] is not None:
+                            reason["score"] = round(entry[1], 4)
+                    if label is not None:
+                        reason["regime"] = label
+                    return reason
+                return {"rule": "REBALANCE_OUT"}
+
             if strategy.execution_lag_days > 0:
                 # Signal today, fill at a later close — removes the
                 # same-close fill assumption (look-ahead robustness).
-                pending_orders = (selected, exposure)
+                pending_orders = (selected, exposure, _rebalance_reason)
                 pending_execute_index = day_index + strategy.execution_lag_days
             else:
-                _execute(selected, exposure, current_day)
+                _execute(selected, exposure, current_day, reason_for=_rebalance_reason)
                 applied_exposure = exposure
             last_rebalance_day = current_day
 
