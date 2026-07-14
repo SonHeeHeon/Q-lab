@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Q-Lab 개인 배포용 네트워크 보안 정책.
+
+  증권앱이라 기본은 HTTPS 강제(cleartext 금지) — 권장 경로는 Tailscale의
+  Let's Encrypt 인증서(`tailscale serve`)나 리버스 프록시(Caddy) HTTPS입니다.
+  이러면 이 파일을 손댈 필요가 없습니다.
+
+  LAN IP로 http 직접 접속하는 빠른 경로를 쓰려면, 아래 domain-config 블록의
+  주석을 풀고 <domain> 에 본인 맥미니의 LAN IP(또는 Tailscale 호스트)를 넣으세요.
+  (Android network-security-config는 CIDR 대역을 지원하지 않아 호스트를 명시해야 합니다.)
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system"/>
+            <!-- 사용자가 신뢰 앵커에 추가한 사설 CA(예: 로컬 Caddy 루트)도 신뢰. -->
+            <certificates src="user"/>
+        </trust-anchors>
+    </base-config>
+
+    <!-- LAN http 빠른 경로 (선택) — 주석 해제 후 본인 호스트로 교체:
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">192.168.0.10</domain>
+    </domain-config>
+    -->
+</network-security-config>

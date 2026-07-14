@@ -15,8 +15,8 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.qlab"
+        // 개인 사이드로드용 고유 ID (앱스토어 미등록). 다른 앱과 충돌만 피하면 됨.
+        applicationId = "com.qlab.personal"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
