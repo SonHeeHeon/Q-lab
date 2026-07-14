@@ -90,6 +90,12 @@ def _write_metrics(run_dir: Path, result: RunResult) -> None:
 
 
 def _write_trades(run_dir: Path, result: RunResult) -> None:
+    # Authoritative machine-readable log — includes the structured logic reason.
+    dumped = [trade.model_dump(mode="json") for trade in result.trades]
+    with (run_dir / "trades.json").open("w", encoding="utf-8") as file:
+        json.dump(dumped, file, ensure_ascii=False, indent=2)
+
+    # Human-friendly CSV — reason flattened to a JSON string cell.
     fields = [
         "date",
         "code",
@@ -101,12 +107,15 @@ def _write_trades(run_dir: Path, result: RunResult) -> None:
         "tax",
         "slippage_bps",
         "cash_flow",
+        "reason",
     ]
     with (run_dir / "trades.csv").open("w", encoding="utf-8", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=fields)
+        writer = csv.DictWriter(file, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
-        for trade in result.trades:
-            writer.writerow(trade.model_dump(mode="json"))
+        for trade, row in zip(result.trades, dumped):
+            flat = dict(row)
+            flat["reason"] = json.dumps(trade.reason, ensure_ascii=False) if trade.reason else ""
+            writer.writerow(flat)
 
 
 def _write_equity_curve(run_dir: Path, result: RunResult) -> None:

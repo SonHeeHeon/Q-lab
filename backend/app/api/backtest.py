@@ -62,11 +62,22 @@ async def get_backtest_run(run_id: str) -> ApiEnvelope[dict[str, Any]]:
     with params_path.open("r", encoding="utf-8") as file:
         params = yaml.safe_load(file) or {}
 
+    # Per-trade log with logic-based reasons (trades.json written by write_report;
+    # older runs may lack it — return an empty list rather than 404).
+    trades: list[dict[str, Any]] = []
+    trades_path = run_dir / "trades.json"
+    if trades_path.exists():
+        with trades_path.open("r", encoding="utf-8") as file:
+            loaded = json.load(file)
+        if isinstance(loaded, list):
+            trades = loaded
+
     return ApiEnvelope(
         data={
             "run_id": run_id,
             "metrics": metrics,
             "params": params,
+            "trades": trades,
         },
         error=None,
     )
