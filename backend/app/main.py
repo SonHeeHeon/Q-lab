@@ -32,6 +32,7 @@ from backend.app.api.system import automation_router, router as system_router
 from backend.app.api.trade_journal import router as trade_journal_router
 from backend.app.api.watchlist import router as watchlist_router
 from backend.app.core.config import settings
+from backend.app.core.security import add_auth_middleware
 from backend.app.services.alerts.monitor import AlertMonitorService
 from backend.app.services.batch.scheduler import start_batch_scheduler, stop_batch_scheduler
 from backend.app.schemas.portfolio import ApiEnvelope, ApiError
@@ -161,13 +162,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="Q-Lab API", lifespan=lifespan)
 
+# localhost/127.0.0.1(임의 포트)은 regex 로 항상 허용하고,
+# settings.CORS_ORIGINS(콤마 구분)에 지정된 추가 오리진(예: 폰)을 allow_origins 로 더한다.
 app.add_middleware(
     CORSMiddleware,
+    allow_origins=settings.cors_origins_list,
     allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 정적 토큰 인증(선택). BACKEND_API_KEY 가 비어 있으면 no-op(기본 동작 유지).
+add_auth_middleware(app)
 
 
 @app.exception_handler(StarletteHTTPException)

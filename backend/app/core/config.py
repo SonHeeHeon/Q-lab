@@ -142,7 +142,16 @@ class Settings(BaseSettings):
     LOG_BACKUP_DAYS: int = 14
     TZ: str = "Asia/Seoul"
 
-    CORS_ORIGINS: list[str] = ["http://localhost", "http://127.0.0.1"]
+    # Backend API 정적 토큰 인증(선택). 빈 문자열이면 인증 OFF —
+    # 로컬 단일 사용자(localhost) 기존 동작을 그대로 유지한다.
+    # 값이 설정되면 /health·docs 를 제외한 모든 요청에
+    # `Authorization: Bearer <key>` (또는 `X-API-Key: <key>`) 헤더를 요구한다.
+    # 이 값은 절대 로그에 남기지 않는다.
+    BACKEND_API_KEY: str = ""
+    # 콤마 구분 추가 허용 오리진(예: 폰 웹 클라이언트).
+    # localhost/127.0.0.1 은 main.py 의 regex 로 항상 허용되므로 여기 넣지 않아도 된다.
+    # 빈 문자열이면 추가 오리진 없음(기존 localhost 전용 동작 유지).
+    CORS_ORIGINS: str = ""
     WS_HEARTBEAT_INTERVAL_S: int = 30
     BATCH_SCHEDULER_AUTOSTART: bool = False
     APSCHEDULER_TIMEZONE: str = "Asia/Seoul"
@@ -218,6 +227,16 @@ class Settings(BaseSettings):
             for code in self.KIS_WS_DEFAULT_CODES.split(",")
             if code.strip()
         ]
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        """추가 허용 CORS 오리진. 콤마 구분 문자열 또는 리스트 모두 허용한다."""
+        raw = self.CORS_ORIGINS
+        if isinstance(raw, (list, tuple)):
+            values = [str(item).strip() for item in raw]
+        else:
+            values = [item.strip() for item in str(raw).split(",")]
+        return [item for item in values if item]
 
     @property
     def krx_credentials_configured(self) -> bool:

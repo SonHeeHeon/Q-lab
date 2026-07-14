@@ -1,0 +1,64 @@
+# =============================================================================
+# Q-Lab — Docker build-context ignore (keeps the context small & secret-free)
+# =============================================================================
+
+# --- python virtualenvs / caches ---
+.venv/
+venv/
+**/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.python-version
+
+# --- Flutter app (never part of the backend image) ---
+app/
+
+# --- version control / tooling / agent state ---
+.git/
+.gitignore
+.github/
+.claude/
+.omc/
+.vscode/
+.idea/
+*.md
+
+# --- secrets / env (provided at runtime via compose env_file) ---
+.env
+.env.*
+!.env.example
+
+# --- runtime data: DBs, tokens, caches, backups (bind-mounted at runtime) ---
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+data/tokens/
+data/cache/
+data/backups/
+data/manual/
+
+# --- logs ---
+logs/
+
+# --- tests (not needed in the runtime image) ---
+backend/tests/
+research/tests/
+**/tests/
+
+# --- research artifacts: reports, notebooks, optimization studies ---
+research/reports/
+research/notebooks/
+**/*.ipynb
+.ipynb_checkpoints/
+
+# --- misc ---
+*.log
+.DS_Store
+docker-compose.yml
+Dockerfile

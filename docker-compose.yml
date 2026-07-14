@@ -1,11 +1,19 @@
 # =============================================================================
-# Q-Lab — Docker Compose (optional)
+# Q-Lab — Docker Compose (personal single-node deploy, e.g. home Mac mini)
 # =============================================================================
-# Local single-process backend container. SQLite files and config are mounted
-# from the host. Use only if you prefer container-based dev; native `uvicorn`
-# is also supported.
+# Runs the baked production image (backend/Dockerfile): prod uvicorn, no
+# --reload, non-root. Only mutable state (SQLite DBs, tokens, caches, logs) is
+# mounted from the host; application code ships inside the image.
 #
-#   $ docker compose up backend
+#   $ docker compose build backend
+#   $ docker compose up -d backend        # detached, survives reboots
+#
+# Phone access: set CORS_ORIGINS / BACKEND_API_KEY in .env before exposing the
+# port beyond localhost (see .omc/reports/2026-07-14_mobile-docker-deploy.md).
+#
+# Dev override (hot-reload against host source) is intentionally NOT the default;
+# add bind-mounts + `command: uvicorn ... --reload` in a compose.override.yml if
+# you want it — do NOT use `uv run` (the runtime image has no uv).
 # =============================================================================
 
 services:
@@ -13,13 +21,16 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+    image: qlab-backend:latest
     container_name: qlab-backend
     env_file: .env
+    environment:
+      TZ: Asia/Seoul
     ports:
+      # Bind to the host so a phone on the LAN/VPN can reach it. Front with a
+      # TLS reverse proxy or Tailscale for anything beyond the local machine.
       - "8000:8000"
     volumes:
       - ./data:/app/data
-      - ./backend:/app/backend
-      - ./shared:/app/shared
-      - ./research:/app/research
-    command: uv run uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
+      - ./logs:/app/logs
+    restart: unless-stopped
