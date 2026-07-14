@@ -15,6 +15,7 @@ import '../../data/api/api_client.dart' show ApiError;
 import '../../data/api/proposals_api.dart';
 import '../../domain/entities/proposal.dart';
 import '../../shared/widgets/empty_state.dart';
+import '../../shared/widgets/reason_chip.dart';
 import 'proposals_controller.dart';
 
 final _krw = NumberFormat('#,##0');
@@ -276,7 +277,7 @@ class _ProposalCard extends StatelessWidget {
               runSpacing: 4,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                _ReasonChip(label: p.ruleLabel, color: sideColor),
+                ReasonChip(reason: p.reason),
                 Text('${_krw.format(p.qty)}주',
                     style: theme.textTheme.bodyMedium),
                 if (p.limitPrice != null)
@@ -288,12 +289,6 @@ class _ProposalCard extends StatelessWidget {
                           ?.copyWith(color: theme.colorScheme.outline)),
               ],
             ),
-            if ((p.reason['replaces'] as String?)?.isNotEmpty ?? false) ...[
-              const SizedBox(height: 4),
-              Text('교체 대상: ${p.reason['replaces']}',
-                  style: theme.textTheme.bodySmall
-                      ?.copyWith(color: theme.colorScheme.outline)),
-            ],
             if (actionable) ...[
               const SizedBox(height: 12),
               Row(
@@ -355,8 +350,11 @@ class _Badge extends StatelessWidget {
       );
 }
 
-class _ReasonChip extends StatelessWidget {
-  const _ReasonChip({required this.label, required this.color});
+/// Generic bordered label pill — same visual language as [ReasonChip] but
+/// for plain `{label, color}` pairs that aren't a backend trade reason
+/// (e.g. proposal lifecycle status).
+class _Pill extends StatelessWidget {
+  const _Pill({required this.label, required this.color});
   final String label;
   final Color color;
 
@@ -398,6 +396,6 @@ class _StatusChip extends StatelessWidget {
       ProposalStatus.failed => Colors.orange,
       _ => Theme.of(context).colorScheme.primary,
     };
-    return _ReasonChip(label: status.label, color: color);
+    return _Pill(label: status.label, color: color);
   }
 }

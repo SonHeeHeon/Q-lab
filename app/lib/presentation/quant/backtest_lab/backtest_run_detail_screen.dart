@@ -10,6 +10,7 @@ import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
 import '../../../data/api/backtest_api.dart';
+import '../../../shared/widgets/reason_chip.dart';
 import 'backtest_lab_controller.dart';
 
 final _date = DateFormat('yyyy-MM-dd');
@@ -70,6 +71,10 @@ class _Body extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Prefer the in-session result (fresh run from the builder, incl.
+    // equity_curve); fall back to the persisted detail's trades[] so a run
+    // opened from history — no in-memory cache — still shows its log.
+    final trades = cached?.trades ?? detail.trades;
     return LayoutBuilder(builder: (context, c) {
       // 2 cols on narrow, 4 on wide
       final cols = c.maxWidth >= 720 ? 4 : 2;
@@ -83,10 +88,8 @@ class _Body extends StatelessWidget {
           _MetricsGrid(metrics: detail.metrics, cols: cols),
           const SizedBox(height: 16),
           _StrategyCard(strategy: detail.strategy, gitCommit: detail.gitCommit),
-          if (cached != null && cached!.trades.isNotEmpty) ...[
-            const SizedBox(height: 16),
-            _TradesCard(trades: cached!.trades),
-          ],
+          const SizedBox(height: 16),
+          _TradesCard(trades: trades),
           if (cached != null && cached!.warnings.isNotEmpty) ...[
             const SizedBox(height: 16),
             _WarningsCard(warnings: cached!.warnings),
@@ -320,7 +323,9 @@ String _formatNav(double v) {
 }
 
 // ---------------------------------------------------------------------------
-// Trades + Warnings (only present for fresh runs from the builder)
+// Trades (fresh in-session runs use `cached`; runs opened from history fall
+// back to the persisted `BacktestRunDetail.trades`) + Warnings (only present
+// for fresh runs from the builder — not persisted).
 // ---------------------------------------------------------------------------
 
 class _TradesCard extends StatelessWidget {
@@ -339,48 +344,65 @@ class _TradesCard extends StatelessWidget {
             Text('🔁 체결 내역  (${trades.length})',
                 style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
             const SizedBox(height: 8),
-            SizedBox(
-              height: 240,
-              child: ListView.separated(
-                itemCount: trades.length,
-                separatorBuilder: (_, __) => Divider(
-                  height: 1,
-                  color: theme.colorScheme.outlineVariant.withValues(alpha: 0.5),
+            if (trades.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Text(
+                  '이 런은 매매 로그가 없습니다.',
+                  style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline),
                 ),
-                itemBuilder: (_, i) {
-                  final t = trades[i];
-                  final isBuy = t.side.toUpperCase() == 'BUY';
-                  final color = isBuy ? Colors.redAccent : Colors.blueAccent;
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 6),
-                    child: Row(
-                      children: [
-                        SizedBox(width: 88, child: Text(fmt.format(t.date), style: theme.textTheme.bodySmall)),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-                          decoration: BoxDecoration(
-                            color: color.withValues(alpha: 0.15),
-                            borderRadius: BorderRadius.circular(4),
+              )
+            else
+              SizedBox(
+                height: 240,
+                child: ListView.separated(
+                  itemCount: trades.length,
+                  separatorBuilder: (_, __) => Divider(
+                    height: 1,
+                    color: theme.colorScheme.outlineVariant.withValues(alpha: 0.5),
+                  ),
+                  itemBuilder: (_, i) {
+                    final t = trades[i];
+                    final isBuy = t.side.toUpperCase() == 'BUY';
+                    final color = isBuy ? Colors.redAccent : Colors.blueAccent;
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 6),
+                      child: Row(
+                        children: [
+                          SizedBox(width: 88, child: Text(fmt.format(t.date), style: theme.textTheme.bodySmall)),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: color.withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(t.side,
+                                style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w700)),
                           ),
-                          child: Text(t.side,
-                              style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w700)),
-                        ),
-                        const SizedBox(width: 8),
-                        SizedBox(
-                          width: 72,
-                          child: Text(t.code,
-                              style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace')),
-                        ),
-                        Expanded(
-                          child: Text('${t.qty}주 @ ₩${NumberFormat('#,##0').format(t.price)}',
-                              style: theme.textTheme.bodySmall),
-                        ),
-                      ],
-                    ),
-                  );
-                },
+                          const SizedBox(width: 8),
+                          SizedBox(
+                            width: 72,
+                            child: Text(t.code,
+                                style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace')),
+                          ),
+                          Expanded(
+                            child: Wrap(
+                              spacing: 6,
+                              runSpacing: 2,
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              children: [
+                                Text('${t.qty}주 @ ₩${NumberFormat('#,##0').format(t.price)}',
+                                    style: theme.textTheme.bodySmall),
+                                ReasonChip(reason: t.reason, dense: true),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
               ),
-            ),
           ],
         ),
       ),

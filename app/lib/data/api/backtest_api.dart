@@ -168,6 +168,7 @@ class BacktestRunDetail {
     required this.strategy,
     this.gitCommit,
     this.rawParams,
+    this.trades = const [],
   });
 
   final String runId;
@@ -175,6 +176,10 @@ class BacktestRunDetail {
   final BacktestStrategy strategy;
   final String? gitCommit;
   final Map<String, dynamic>? rawParams;
+
+  /// Trade log for PERSISTED runs (`GET /api/backtest/runs/{id}`). Older
+  /// runs predate this field and return an empty list — never absent.
+  final List<TradeRecord> trades;
 
   factory BacktestRunDetail.fromJson(Map<String, dynamic> j) {
     final params = j['params'] is Map ? asJsonMap(j['params']) : <String, dynamic>{};
@@ -185,6 +190,9 @@ class BacktestRunDetail {
       strategy: BacktestStrategy.fromJson(strat),
       gitCommit: params['git_commit'] as String?,
       rawParams: params,
+      trades: ((j['trades'] as List?) ?? const [])
+          .map((e) => TradeRecord.fromJson(asJsonMap(e)))
+          .toList(),
     );
   }
 }
@@ -337,6 +345,7 @@ class TradeRecord {
     required this.qty,
     required this.price,
     required this.cashFlow,
+    this.reason,
   });
   final DateTime date;
   final String code;
@@ -344,6 +353,12 @@ class TradeRecord {
   final int qty;
   final double price;
   final double cashFlow;
+
+  /// Structured reason the strategy engine bought/sold this, e.g.
+  /// `{"rule": "STOP_LOSS", "return": -0.12}`. Nullable — older persisted
+  /// runs predate this field. Drives `ReasonChip`.
+  final Map<String, dynamic>? reason;
+
   factory TradeRecord.fromJson(Map<String, dynamic> j) => TradeRecord(
         date: DateTime.parse(j['date'] as String),
         code: j['code'] as String,
@@ -351,6 +366,7 @@ class TradeRecord {
         qty: _i(j['qty']),
         price: _d(j['price']),
         cashFlow: _d(j['cash_flow']),
+        reason: j['reason'] is Map ? asJsonMap(j['reason']) : null,
       );
 }
 

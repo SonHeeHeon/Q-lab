@@ -85,11 +85,15 @@ class Proposal {
   String get ruleLabel {
     final rule = (reason['rule'] as String?)?.toUpperCase() ?? '';
     return switch (rule) {
+      'REBALANCE_IN' => '신규 편입',
+      'REBALANCE_OUT' => '리밸런스 제외',
       'STOP_LOSS' => '손절',
       'TAKE_PROFIT' => '익절',
       'BAND_TRIM' => '비중 트림',
       'SCORE_EXIT' => '점수 이탈',
+      'SCORE_EXIT_REPLACE' => '교체 편입',
       'REGIME_DERISK' => '레짐 축소',
+      'REGIME_RERISK' => '레짐 복원',
       'REBALANCE' => '리밸런스',
       _ => rule.isEmpty ? '제안' : rule,
     };
