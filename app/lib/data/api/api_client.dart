@@ -61,7 +61,13 @@ final dioProvider = Provider<Dio>((ref) {
       connectTimeout: const Duration(seconds: 8),
       receiveTimeout: const Duration(seconds: 12),
       responseType: ResponseType.json,
-      headers: {'Content-Type': 'application/json'},
+      headers: {
+        'Content-Type': 'application/json',
+        // Sent only when the backend auth gate is enabled (BACKEND_API_KEY set
+        // and mirrored into --dart-define=API_KEY). Empty = header omitted, so
+        // the default auth-off/localhost flow is unchanged.
+        if (Env.apiKey.isNotEmpty) 'Authorization': 'Bearer ${Env.apiKey}',
+      },
     ),
   );
 

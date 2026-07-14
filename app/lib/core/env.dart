@@ -36,5 +36,14 @@ class Env {
     defaultValue: 'dev',
   );
 
+  /// Optional bearer token for the backend's `BACKEND_API_KEY` gate. Empty
+  /// (default) = no header sent, matching the backend's auth-off default. Set
+  /// it at build time when exposing the backend beyond localhost (phone):
+  ///   --dart-define=API_KEY=<the same value as backend BACKEND_API_KEY>
+  static const String apiKey = String.fromEnvironment(
+    'API_KEY',
+    defaultValue: '',
+  );
+
   static bool get isDev => environment == 'dev';
 }
