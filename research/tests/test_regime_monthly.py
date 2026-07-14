@@ -87,6 +87,11 @@ def test_monthly_check_sells_down_on_confirmed_crisis(patched) -> None:
     assert sells[0].date == march_start
     # Everything sold → NAV parked in cash afterwards.
     assert any("regime-adjust" in w for w in result.warnings)
+    # Logic-based reason: the de-risk sell is tagged REGIME_DERISK (non-LLM).
+    derisk = next(t for t in sells if t.date == march_start)
+    assert derisk.reason["rule"] == "REGIME_DERISK"
+    assert derisk.reason["to_exposure"] < derisk.reason["from_exposure"]
+    assert "label" in derisk.reason
 
 
 def test_rebalance_only_mode_never_adjusts_midway(patched) -> None:

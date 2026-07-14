@@ -30,6 +30,7 @@ data/*.db
 data/*.db-journal
 data/*.db-wal
 data/*.db-shm
+data/backups/
 data/tokens/*
 !data/tokens/.gitkeep
 data/cache/*
