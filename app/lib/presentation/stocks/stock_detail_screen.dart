@@ -7,7 +7,6 @@ library;
 
 import 'dart:math' show min, max;
 
-import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
@@ -256,10 +255,14 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
                   broker: d.broker,
                   market: d.market,
                 ),
-                // ── 1-year chart ──────────────────────────────────────────
+                // ── Timeframe candlestick chart ────────────────────────────
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-                  child: _PriceChart(history: d.priceHistory, currency: d.currency),
+                  child: _CandleChart(
+                    market: d.marketCountry,
+                    symbol: d.isUs ? d.symbol : d.code,
+                    currency: d.currency,
+                  ),
                 ),
                 // ── Sector / industry info ─────────────────────────────────
                 if (d.sector != null || d.industry != null)
@@ -397,93 +400,418 @@ class _PriceHeader extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// 1-year price chart
+// Candlestick chart — timeframe selector (일/주/월/연) + horizontal pan
+//
+// fl_chart 0.69.x has no CandlestickChart type (checked: only bar/line/pie/
+// radar/scatter chart dirs exist in the package), so candles are rendered
+// with a compact CustomPainter instead of a workaround line/bar hack.
 // ---------------------------------------------------------------------------
 
-class _PriceChart extends StatelessWidget {
-  const _PriceChart({required this.history, required this.currency});
-  final List<PricePoint> history;
+enum _Interval { day, week, month, year }
+
+extension on _Interval {
+  String get wire => switch (this) {
+        _Interval.day => 'day',
+        _Interval.week => 'week',
+        _Interval.month => 'month',
+        _Interval.year => 'year',
+      };
+
+  String get label => switch (this) {
+        _Interval.day => '일봉',
+        _Interval.week => '주봉',
+        _Interval.month => '월봉',
+        _Interval.year => '연봉',
+      };
+
+  /// Default page size — also the x-axis width shown right after a switch.
+  int get defaultCount => switch (this) {
+        _Interval.day => 120,
+        _Interval.week => 104,
+        _Interval.month => 60,
+        _Interval.year => 20,
+      };
+}
+
+class _CandleChart extends ConsumerStatefulWidget {
+  const _CandleChart({required this.market, required this.symbol, required this.currency});
+  final String market;
+  final String symbol;
   final String currency;
+
+  @override
+  ConsumerState<_CandleChart> createState() => _CandleChartState();
+}
+
+class _CandleChartState extends ConsumerState<_CandleChart> {
+  /// Hard ceiling on in-memory bars per interval — pan pages back until hit.
+  static const _maxBars = 600;
+  static const _slotWidth = 8.0;
+  static const _chartHeight = 220.0;
+
+  _Interval _interval = _Interval.day;
+  final Map<_Interval, List<Candle>> _cache = {};
+  final Map<_Interval, bool> _reachedStart = {};
+  bool _loading = true;
+  bool _loadingMore = false;
+  Object? _error;
+  late final ScrollController _scrollController;
+
+  List<Candle> get _candles => _cache[_interval] ?? const [];
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollController = ScrollController()..addListener(_onScroll);
+    _load(_interval);
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  // ── Scroll → pan paging ─────────────────────────────────────────────────
+
+  void _onScroll() {
+    if (_loading || _loadingMore) return;
+    if (_reachedStart[_interval] == true) return;
+    if (_candles.length >= _maxBars) return;
+    if (!_scrollController.hasClients) return;
+    final pos = _scrollController.position;
+    // Dragging toward the left edge (oldest loaded bars) → fetch further back.
+    if (pos.pixels <= pos.minScrollExtent + _slotWidth * 10) {
+      _loadOlderPage();
+    }
+  }
+
+  Future<void> _load(_Interval interval) async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final candles = await ref.read(stocksApiProvider).history(
+            market: widget.market,
+            symbol: widget.symbol,
+            interval: interval.wire,
+            count: interval.defaultCount,
+          );
+      if (!mounted) return;
+      setState(() {
+        _cache[interval] = candles;
+        _reachedStart[interval] = candles.length < interval.defaultCount;
+        _loading = false;
+      });
+      _jumpToLatest();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e;
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _loadOlderPage() async {
+    final before = _candles;
+    if (before.isEmpty) return;
+    setState(() => _loadingMore = true);
+    final interval = _interval;
+    try {
+      final oldest = before.first.date;
+      final older = await ref.read(stocksApiProvider).history(
+            market: widget.market,
+            symbol: widget.symbol,
+            interval: interval.wire,
+            count: interval.defaultCount,
+            before: oldest,
+          );
+      if (!mounted) return;
+      final merged = mergeOlderCandles(before, older);
+      final addedBars = merged.length - before.length;
+      setState(() {
+        _cache[interval] = merged;
+        _reachedStart[interval] = addedBars == 0;
+        _loadingMore = false;
+      });
+      if (addedBars > 0) {
+        final addedWidth = addedBars * _slotWidth;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted || !_scrollController.hasClients) return;
+          // Keep the on-screen bars visually anchored after the prepend.
+          _scrollController.jumpTo(_scrollController.offset + addedWidth);
+        });
+      }
+    } catch (_) {
+      // Paging failure is non-fatal — keep whatever is already on screen.
+      if (!mounted) return;
+      setState(() => _loadingMore = false);
+    }
+  }
+
+  void _jumpToLatest() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scrollController.hasClients) return;
+      _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+    });
+  }
+
+  void _onSelectInterval(_Interval next) {
+    if (next == _interval) return;
+    setState(() => _interval = next);
+    if (_cache.containsKey(next)) {
+      _jumpToLatest();
+    } else {
+      _load(next);
+    }
+  }
+
+  // ── Build ────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    if (history.isEmpty) {
-      return SizedBox(
-        height: 140,
-        child: Center(
-          child: Text('차트 데이터 없음',
-              style: TextStyle(color: theme.colorScheme.outline)),
-        ),
-      );
-    }
-
-    final closes = history.map((p) => p.close).toList();
-    final minY = closes.reduce(min) * 0.99;
-    final maxY = closes.reduce(max) * 1.01;
-    final spots = history
-        .asMap()
-        .entries
-        .map((e) => FlSpot(e.key.toDouble(), e.value.close))
-        .toList();
-
-    final isUp = closes.last >= closes.first;
-    final lineColor = isUp ? Colors.redAccent : Colors.blueAccent;
-
-    final firstDate = history.first.date;
-    final lastDate = history.last.date;
-    final startLabel = _date.format(firstDate);
-    final endLabel = _date.format(lastDate);
+    final candles = _candles;
+    final totalWidth = max(candles.length * _slotWidth, 1.0);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        _IntervalSelector(current: _interval, onSelect: _onSelectInterval),
+        const SizedBox(height: 10),
         SizedBox(
-          height: 160,
-          child: LineChart(
-            LineChartData(
-              minY: minY,
-              maxY: maxY,
-              clipData: const FlClipData.all(),
-              gridData: const FlGridData(show: false),
-              borderData: FlBorderData(show: false),
-              titlesData: const FlTitlesData(show: false),
-              lineBarsData: [
-                LineChartBarData(
-                  spots: spots,
-                  isCurved: true,
-                  curveSmoothness: 0.25,
-                  color: lineColor,
-                  barWidth: 2,
-                  dotData: const FlDotData(show: false),
-                  belowBarData: BarAreaData(
-                    show: true,
-                    color: lineColor.withValues(alpha: 0.08),
-                  ),
-                ),
+          height: _chartHeight,
+          child: _loading
+              ? const Center(child: CircularProgressIndicator())
+              : _error != null
+                  ? _ChartError(onRetry: () => _load(_interval))
+                  : candles.isEmpty
+                      ? Center(
+                          child: Text('가격 데이터가 없습니다',
+                              style: TextStyle(color: theme.colorScheme.outline)),
+                        )
+                      : Stack(
+                          children: [
+                            ClipRect(
+                              child: SingleChildScrollView(
+                                controller: _scrollController,
+                                scrollDirection: Axis.horizontal,
+                                child: RepaintBoundary(
+                                  child: CustomPaint(
+                                    size: Size(totalWidth, _chartHeight),
+                                    painter: _CandlestickPainter(
+                                      candles: candles,
+                                      slotWidth: _slotWidth,
+                                      upColor: Colors.redAccent,
+                                      downColor: Colors.blueAccent,
+                                      gridColor: theme.colorScheme.outlineVariant
+                                          .withValues(alpha: 0.4),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            if (_loadingMore)
+                              Positioned(
+                                top: 6,
+                                left: 0,
+                                right: 0,
+                                child: Center(child: _LoadingMorePill(theme: theme)),
+                              ),
+                          ],
+                        ),
+        ),
+        if (candles.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(_date.format(candles.first.date),
+                    style: TextStyle(fontSize: 10, color: theme.colorScheme.outline)),
+                Text(_interval.label,
+                    style: TextStyle(
+                        fontSize: 10,
+                        color: theme.colorScheme.outline,
+                        fontWeight: FontWeight.w600)),
+                Text(_date.format(candles.last.date),
+                    style: TextStyle(fontSize: 10, color: theme.colorScheme.outline)),
               ],
             ),
           ),
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(startLabel,
-                  style: TextStyle(fontSize: 10, color: theme.colorScheme.outline)),
-              Text('1년 일봉',
-                  style: TextStyle(
-                      fontSize: 10,
-                      color: theme.colorScheme.outline,
-                      fontWeight: FontWeight.w600)),
-              Text(endLabel,
-                  style: TextStyle(fontSize: 10, color: theme.colorScheme.outline)),
-            ],
-          ),
-        ),
       ],
     );
+  }
+}
+
+class _LoadingMorePill extends StatelessWidget {
+  const _LoadingMorePill({required this.theme});
+  final ThemeData theme;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface.withValues(alpha: 0.92),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: theme.colorScheme.outlineVariant),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox(
+            width: 11,
+            height: 11,
+            child: CircularProgressIndicator(
+              strokeWidth: 1.6,
+              color: theme.colorScheme.outline,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text('더 불러오는 중',
+              style: TextStyle(fontSize: 10, color: theme.colorScheme.outline)),
+        ],
+      ),
+    );
+  }
+}
+
+class _ChartError extends StatelessWidget {
+  const _ChartError({required this.onRetry});
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.error_outline, size: 28, color: theme.colorScheme.outline),
+          const SizedBox(height: 6),
+          Text('차트 데이터를 불러오지 못했습니다',
+              style: TextStyle(color: theme.colorScheme.outline, fontSize: 12)),
+          const SizedBox(height: 6),
+          TextButton(onPressed: onRetry, child: const Text('다시 시도')),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Timeframe selector — 일봉/주봉/월봉/연봉 + disabled 시간봉 (no intraday data yet)
+// ---------------------------------------------------------------------------
+
+class _IntervalSelector extends StatelessWidget {
+  const _IntervalSelector({required this.current, required this.onSelect});
+  final _Interval current;
+  final ValueChanged<_Interval> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
+          for (final interval in _Interval.values) ...[
+            ChoiceChip(
+              label: Text(interval.label),
+              selected: current == interval,
+              visualDensity: VisualDensity.compact,
+              onSelected: (_) => onSelect(interval),
+            ),
+            const SizedBox(width: 6),
+          ],
+          Tooltip(
+            message: '시간봉(분/시간 단위) 데이터는 아직 준비 중입니다',
+            child: ChoiceChip(
+              label: const Text('시간봉'),
+              avatar: Icon(Icons.hourglass_empty, size: 14, color: theme.colorScheme.outline),
+              selected: false,
+              visualDensity: VisualDensity.compact,
+              onSelected: null, // disabled — backend has no intraday endpoint yet
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Candlestick painter — up=red / down=blue (Korean market convention, see
+// portfolio_screen.dart's redAccent/blueAccent usage)
+// ---------------------------------------------------------------------------
+
+class _CandlestickPainter extends CustomPainter {
+  _CandlestickPainter({
+    required this.candles,
+    required this.slotWidth,
+    required this.upColor,
+    required this.downColor,
+    required this.gridColor,
+  });
+
+  final List<Candle> candles;
+  final double slotWidth;
+  final Color upColor;
+  final Color downColor;
+  final Color gridColor;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (candles.isEmpty) return;
+
+    final maxHigh = candles.map((c) => c.high).reduce(max);
+    final minLow = candles.map((c) => c.low).reduce(min);
+    final span = maxHigh - minLow;
+    final padding = span == 0 ? (maxHigh == 0 ? 1.0 : maxHigh * 0.02) : span * 0.08;
+    final top = maxHigh + padding;
+    final bottom = minLow - padding;
+    final valueRange = (top - bottom) == 0 ? 1.0 : (top - bottom);
+
+    double yFor(double v) => size.height - ((v - bottom) / valueRange) * size.height;
+
+    final gridPaint = Paint()
+      ..color = gridColor
+      ..strokeWidth = 0.5;
+    for (final frac in const [0.0, 0.25, 0.5, 0.75, 1.0]) {
+      final y = size.height * frac;
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), gridPaint);
+    }
+
+    for (var i = 0; i < candles.length; i++) {
+      final c = candles[i];
+      final cx = i * slotWidth + slotWidth / 2;
+      final color = c.isUp ? upColor : downColor;
+
+      canvas.drawLine(
+        Offset(cx, yFor(c.high)),
+        Offset(cx, yFor(c.low)),
+        Paint()
+          ..color = color
+          ..strokeWidth = 1,
+      );
+
+      final bodyTop = yFor(max(c.open, c.close));
+      final bodyBottomRaw = yFor(min(c.open, c.close));
+      final bodyBottom = bodyBottomRaw <= bodyTop ? bodyTop + 1 : bodyBottomRaw;
+      final bodyWidth = slotWidth * 0.62;
+      canvas.drawRect(
+        Rect.fromLTRB(cx - bodyWidth / 2, bodyTop, cx + bodyWidth / 2, bodyBottom),
+        Paint()..color = color,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _CandlestickPainter oldDelegate) {
+    return !identical(oldDelegate.candles, candles) || oldDelegate.slotWidth != slotWidth;
   }
 }
 

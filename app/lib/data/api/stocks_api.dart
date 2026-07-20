@@ -88,6 +88,54 @@ class PricePoint {
 }
 
 // ---------------------------------------------------------------------------
+// OHLC candle (for the interactive candlestick chart)
+//   GET /api/stocks/{market_country}/{symbol}/history
+// ---------------------------------------------------------------------------
+
+class Candle {
+  Candle({
+    required this.date,
+    required this.open,
+    required this.high,
+    required this.low,
+    required this.close,
+    this.volume,
+  });
+
+  final DateTime date;
+  final double open;
+  final double high;
+  final double low;
+  final double close;
+  final int? volume;
+
+  bool get isUp => close >= open;
+
+  factory Candle.fromJson(Map<String, dynamic> j) => Candle(
+        date: DateTime.tryParse((j['date'] as String?) ?? '') ?? DateTime.now(),
+        open: safeDouble(j['open'], hint: 'candle.open'),
+        high: safeDouble(j['high'], hint: 'candle.high'),
+        low: safeDouble(j['low'], hint: 'candle.low'),
+        close: safeDouble(j['close'], hint: 'candle.close'),
+        volume: (j['volume'] as num?)?.toInt(),
+      );
+}
+
+/// Prepends an older page of candles (fetched via `before:` paging) onto the
+/// currently-loaded ascending list, de-duplicating the boundary bar.
+///
+/// The backend's `before` query is inclusive ("bars end on/before this
+/// date"), so the oldest bar already loaded is typically returned again at
+/// the tail of [older] — keep only strictly-older bars before merging.
+List<Candle> mergeOlderCandles(List<Candle> current, List<Candle> older) {
+  if (current.isEmpty) return older;
+  final oldestLoaded = current.first.date;
+  final fresh = older.where((c) => c.date.isBefore(oldestLoaded)).toList();
+  if (fresh.isEmpty) return current;
+  return [...fresh, ...current];
+}
+
+// ---------------------------------------------------------------------------
 // Live / intraday quote
 // ---------------------------------------------------------------------------
 
@@ -291,6 +339,30 @@ class StocksApi {
     final dio = _ref.read(dioProvider);
     final res = await dio.get<dynamic>('/api/stocks/${market.toUpperCase()}/$code');
     return StockDetail.fromJson(asJsonMap(res.data));
+  }
+
+  /// Fetches an ascending page of OHLC candles for the timeframe chart.
+  ///
+  /// [before] fetches the page ending on/before that date — used to page
+  /// backward (pan) through older history. Omit for the latest page.
+  Future<List<Candle>> history({
+    required String market,
+    required String symbol,
+    required String interval,
+    int count = 120,
+    DateTime? before,
+  }) async {
+    final dio = _ref.read(dioProvider);
+    final res = await dio.get<dynamic>(
+      '/api/stocks/${market.toUpperCase()}/$symbol/history',
+      queryParameters: {
+        'interval': interval,
+        'count': count,
+        if (before != null) 'before': before.toIso8601String().substring(0, 10),
+      },
+    );
+    final list = (res.data as List?) ?? const [];
+    return list.map((e) => Candle.fromJson(asJsonMap(e))).toList();
   }
 }
 
