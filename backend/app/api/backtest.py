@@ -12,6 +12,11 @@ import yaml
 from fastapi import APIRouter, HTTPException
 
 from backend.app.schemas.portfolio import ApiEnvelope
+from backend.app.services.batch.daily_analysis import (
+    PRIVATE_STRATEGY_DIR,
+    STRATEGY_DIR,
+    load_strategy,
+)
 from research.backtest.engine import RunResult, run_backtest
 from research.scripts.run_backtest import LEADERBOARD_PATH, RUNS_ROOT, write_report
 from shared.domain.strategy import StrategyDefinition
@@ -81,6 +86,55 @@ async def get_backtest_run(run_id: str) -> ApiEnvelope[dict[str, Any]]:
         },
         error=None,
     )
+
+
+@router.get("/strategies", response_model=ApiEnvelope[list[dict[str, Any]]])
+async def list_strategies() -> ApiEnvelope[list[dict[str, Any]]]:
+    """List usable strategy presets (private/ gitignored dir wins over public).
+
+    Globs the filesystem at runtime because personal tuned strategies live in
+    research/strategies/private/ which is never committed. Returns lightweight
+    metadata so the builder can offer a preset dropdown.
+    """
+    seen: dict[str, dict[str, Any]] = {}
+    # Private first so a private preset shadows a same-named public one.
+    for directory, is_private in ((PRIVATE_STRATEGY_DIR, True), (STRATEGY_DIR, False)):
+        if not directory.exists():
+            continue
+        for path in sorted(directory.glob("*.yaml")):
+            name = path.stem
+            if name in seen:
+                continue
+            try:
+                with path.open("r", encoding="utf-8") as file:
+                    payload = yaml.safe_load(file) or {}
+            except (OSError, yaml.YAMLError):
+                continue
+            groups = payload.get("groups")
+            seen[name] = {
+                "name": payload.get("name", name),
+                "description": payload.get("description", ""),
+                "universe": payload.get("universe"),
+                "rebalance_freq": payload.get("rebalance_freq"),
+                "top_n": payload.get("top_n"),
+                "is_private": is_private,
+                # groups-mode presets can't be edited in the flat factor UI —
+                # the client uses this to switch to read-only "use as-is" mode.
+                "is_grouped": bool(groups),
+            }
+    return ApiEnvelope(data=list(seen.values()), error=None)
+
+
+@router.get("/strategies/{name}", response_model=ApiEnvelope[dict[str, Any]])
+async def get_strategy(name: str) -> ApiEnvelope[dict[str, Any]]:
+    """Return a full strategy preset (incl. groups) for loading into the builder."""
+    if "/" in name or "\\" in name or name in {"", ".", ".."}:
+        raise HTTPException(status_code=400, detail="Invalid strategy name")
+    try:
+        strategy = load_strategy(name)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Strategy not found: {name}")
+    return ApiEnvelope(data=strategy.model_dump(mode="json"), error=None)
 
 
 def _run_and_write_report(strategy: StrategyDefinition) -> tuple[RunResult, Path]:
