@@ -158,6 +158,10 @@ class Settings(BaseSettings):
     DAILY_ANALYSIS_CRON: str = "30 16 * * MON-FRI"
     DAILY_REPORT_CRON: str = "45 16 * * MON-FRI"
     DATA_SYNC_CRON: str = "0 18 * * MON-FRI"
+    # 배치 스케줄러(BATCH_SCHEDULER_AUTOSTART)가 꺼져 있던 기간 뒤에도 서버가
+    # 켜지면 가격/지수 데이터가 최신으로 따라잡도록, 시작 시 1회 run_data_sync를
+    # 백그라운드로 실행한다(멱등·증분이라 반복 실행해도 안전). false면 비활성화.
+    DATA_SYNC_ON_STARTUP: bool = True
     BROKER_ORDER_SYNC_CRON: str = "10 16 * * MON-FRI"
     NAV_SNAPSHOT_CRON: str = "20 16 * * MON-FRI"
     # 승인형 반자동: 제안 생성(data_sync 18:00 이후) / 미승인 제안 만료(개장 전)

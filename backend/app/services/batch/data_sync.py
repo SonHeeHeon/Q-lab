@@ -80,8 +80,20 @@ async def run_data_sync(
         flows_start = _incremental_start(
             conn, "investor_flows_daily", today, overlap_days, fallback=price_start
         )
+        # market_index is shared by KOSPI/KOSDAQ (pykrx) *and* macro series
+        # (SP500/US10Y/USDKRW/VIX, via macro_loader) under different
+        # index_code values. An unscoped MAX(date) over the whole table can
+        # be dragged forward by the macro rows even when KOSPI/KOSDAQ have
+        # fallen behind (e.g. a transient pykrx failure), which would then
+        # skip the actual gap forever. Scope this to the KR index codes that
+        # update_market_indices() actually manages.
         index_start = _incremental_start(
-            conn, "market_index", today, overlap_days, fallback=price_start
+            conn,
+            "market_index",
+            today,
+            overlap_days,
+            fallback=price_start,
+            where="index_code IN ('KOSPI', 'KOSDAQ')",
         )
         us_start = _incremental_start(
             conn, "prices_daily_us", today, overlap_days, fallback=price_start
@@ -146,15 +158,23 @@ def _incremental_start(
     overlap_days: int,
     *,
     fallback: Date | None = None,
+    where: str | None = None,
 ) -> Date:
     """Resume from the table's last date minus overlap.
 
     Missing/empty table → ``fallback`` (usually the prices start) so a
     brand-new dataset backfills from known coverage instead of silently
     syncing only the last few days.
+
+    ``where`` optionally scopes the MAX(date) lookup (e.g. to a subset of
+    index_code values) for tables shared by multiple datasets with different
+    sync cadences, so one dataset's freshness can't mask another's gap.
     """
     try:
-        row = conn.execute(f"SELECT MAX(date) FROM {table}").fetchone()
+        query = f"SELECT MAX(date) FROM {table}"
+        if where:
+            query += f" WHERE {where}"
+        row = conn.execute(query).fetchone()
         last = Date.fromisoformat(str(row[0])) if row and row[0] else None
     except sqlite3.Error:
         last = None

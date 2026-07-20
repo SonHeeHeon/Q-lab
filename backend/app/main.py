@@ -34,6 +34,7 @@ from backend.app.api.watchlist import router as watchlist_router
 from backend.app.core.config import settings
 from backend.app.core.security import add_auth_middleware
 from backend.app.services.alerts.monitor import AlertMonitorService
+from backend.app.services.batch.data_sync import run_data_sync
 from backend.app.services.batch.scheduler import start_batch_scheduler, stop_batch_scheduler
 from backend.app.schemas.portfolio import ApiEnvelope, ApiError
 from backend.app.services.kis.market_snapshot import (
@@ -65,6 +66,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     risk_manager: PortfolioRiskManager | None = None
     risk_subscription_task: asyncio.Task[None] | None = None
     alert_monitor: AlertMonitorService | None = None
+    startup_data_sync_task: asyncio.Task[None] | None = None
 
     if settings.RISK_MANAGER_AUTOSTART:
         risk_manager = PortfolioRiskManager()
@@ -119,6 +121,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         batch_scheduler = start_batch_scheduler()
         app.state.batch_scheduler = batch_scheduler
 
+    if settings.DATA_SYNC_ON_STARTUP:
+        startup_data_sync_task = asyncio.create_task(
+            _run_startup_data_sync(),
+            name="startup-data-sync",
+        )
+        app.state.startup_data_sync_task = startup_data_sync_task
+
     if settings.MARKET_SNAPSHOT_AUTOSTART:
         market_snapshot_scheduler = start_market_snapshot_scheduler()
         app.state.market_snapshot_scheduler = market_snapshot_scheduler
@@ -148,6 +157,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await order_tracker.stop()
         stop_market_snapshot_scheduler(market_snapshot_scheduler)
         stop_batch_scheduler(batch_scheduler)
+        if startup_data_sync_task is not None and not startup_data_sync_task.done():
+            startup_data_sync_task.cancel()
+            try:
+                await startup_data_sync_task
+            except asyncio.CancelledError:
+                pass
         if kis_ws_client is not None:
             await kis_ws_client.stop()
         if risk_subscription_task is not None:
@@ -281,6 +296,27 @@ async def _restore_kill_switch() -> None:
             logger.info("restored kill switch from db enabled=%s", enabled)
     except Exception:
         logger.exception("failed to restore kill switch from db")
+
+
+async def _run_startup_data_sync() -> None:
+    """One-shot catch-up sync shortly after startup.
+
+    Covers the case where the backend was off (or the daily batch scheduler
+    was disabled) for a while and price/index data has gone stale.
+    ``run_data_sync`` is idempotent+incremental (resumes from each dataset's
+    last date), so running it here is safe even if the 18:00 cron job also
+    runs later the same day. Runs in the background so it never delays
+    startup or request serving; a data-source failure is caught here so it
+    can never crash the app.
+    """
+    try:
+        await asyncio.sleep(2)  # let the rest of startup settle first
+        summary = await run_data_sync()
+        logger.info("startup data sync complete: %s", summary.to_dict())
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("startup data sync failed; continuing without it")
 
 
 async def _reconcile_risk_subscriptions(

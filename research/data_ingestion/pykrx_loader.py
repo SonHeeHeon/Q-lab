@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -25,6 +26,8 @@ from shared.db.models import (
     Stock,
 )
 from shared.db.session import research_session
+
+logger = logging.getLogger(__name__)
 
 MARKET_INDEX_TICKERS = {
     "KOSPI": "1001",
@@ -176,8 +179,14 @@ async def update_market_index(
             "d",
             False,
         )
-    except Exception as exc:
-        print(f"[phase2:warn] pykrx index failed for {index_code.upper()}: {exc}")
+    except Exception:
+        logger.warning(
+            "pykrx index failed for %s (range %s..%s); falling back to FDR",
+            index_code.upper(),
+            start,
+            end,
+            exc_info=True,
+        )
         df = await asyncio.to_thread(_fdr_index_frame, index_code.upper(), start, end)
     rows = []
     for row_date, row in df.iterrows():
@@ -190,6 +199,14 @@ async def update_market_index(
                 "date": _to_date(row_date),
                 "close": _to_decimal(close),
             }
+        )
+    if not rows:
+        logger.warning(
+            "no index rows returned for %s in range %s..%s "
+            "(both pykrx and FDR yielded nothing)",
+            index_code.upper(),
+            start,
+            end,
         )
     await _insert_ignore(MarketIndex, rows)
     return LoadResult(name=f"market_index:{index_code.upper()}", requested=len(rows), inserted_or_ignored=len(rows))
@@ -494,6 +511,8 @@ def _fdr_index_frame(index_code: str, start: date, end: date) -> pd.DataFrame:
         import FinanceDataReader as fdr
 
         return fdr.DataReader(FDR_INDEX_TICKERS[index_code], start, end)
-    except Exception as exc:
-        print(f"[phase2:warn] FinanceDataReader index failed for {index_code}: {exc}")
+    except Exception:
+        logger.warning(
+            "FinanceDataReader index failed for %s", index_code, exc_info=True
+        )
         return pd.DataFrame()
