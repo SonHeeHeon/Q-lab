@@ -29,6 +29,7 @@ TOKEN_PATH = "/oauth2/token"
 ACCOUNTS_PATH = "/api/v1/accounts"
 HOLDINGS_PATH = "/api/v1/holdings"
 PRICES_PATH = "/api/v1/prices"
+STOCKS_PATH = "/api/v1/stocks"
 ORDERS_PATH = "/api/v1/orders"
 EXCHANGE_RATE_PATH = "/api/v1/exchange-rate"
 BUYING_POWER_PATH = "/api/v1/buying-power"
@@ -59,6 +60,19 @@ class TossAccount:
 class TossToken:
     access_token: str
     expires_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class TossStockInfo:
+    """Basic reference data for one symbol from the Stock Info endpoint."""
+
+    symbol: str
+    name: str | None  # Korean display name (e.g. "램리서치")
+    english_name: str | None
+    isin: str | None
+    market: str | None
+    currency: str | None
+    raw: dict[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,6 +233,28 @@ class TossRestClient:
         if not quotes:
             raise TossRestError(f"Toss price not found for symbol: {symbol}")
         return quotes[0]
+
+    async def get_stock_infos(self, symbols: list[str]) -> list[TossStockInfo]:
+        """Fetch basic stock info (Korean name + ISIN) for up to 200 symbols."""
+        if not symbols:
+            return []
+        payload = await self._request(
+            "GET",
+            STOCKS_PATH,
+            params={"symbols": ",".join(symbols[:200])},
+        )
+        return [
+            TossStockInfo(
+                symbol=str(row.get("symbol") or ""),
+                name=str(row.get("name") or "") or None,
+                english_name=str(row.get("englishName") or "") or None,
+                isin=str(row.get("isinCode") or "") or None,
+                market=str(row.get("market") or "") or None,
+                currency=str(row.get("currency") or "") or None,
+                raw=row,
+            )
+            for row in _as_list(payload.get("result"))
+        ]
 
     async def get_exchange_rate(
         self,

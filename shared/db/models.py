@@ -453,6 +453,37 @@ class MarketCapDaily(ResearchBase):
     shares_outstanding: Mapped[int | None] = mapped_column(Integer)
 
 
+class StockUs(ResearchBase):
+    """US universe (NASDAQ100-ish) mirrored into research.db.
+
+    The table is created out-of-band by
+    ``research/scripts/download_us_universe.py``; this ORM model mirrors that
+    schema. ``korean_name``/``isin`` are backfilled from Toss (see
+    ``backend.app.services.batch.us_names_sync``) so US tickers are searchable
+    by their Korean display name in-app.
+    """
+
+    __tablename__ = "stocks_us"
+
+    ticker: Mapped[str] = mapped_column(Text, primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    exchange: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'NASDAQ'")
+    )
+    sector: Mapped[str | None] = mapped_column(Text)
+    industry: Mapped[str | None] = mapped_column(Text)
+    currency: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'USD'")
+    )
+    listed_at: Mapped[date | None] = mapped_column(Date)
+    delisted_at: Mapped[date | None] = mapped_column(Date)
+    is_delisted: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("0")
+    )
+    korean_name: Mapped[str | None] = mapped_column(Text)
+    isin: Mapped[str | None] = mapped_column(Text)
+
+
 Index("idx_trades_account_executed", Trade.account_type, Trade.executed_at.desc())
 Index("idx_trades_stock", Trade.stock_code)
 Index("idx_trades_order_no", Trade.kis_order_no)
