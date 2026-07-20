@@ -162,6 +162,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="Q-Lab API", lifespan=lifespan)
 
+# 미들웨어 순서 주의: Starlette는 나중에 add 한 것이 더 '바깥'이다. CORS 가 반드시
+# 최외곽이어야 인증 미들웨어가 401을 반환할 때도 응답에 CORS 헤더가 붙는다(안 그러면
+# 웹 클라이언트는 401 대신 정체불명의 network/XMLHttpRequest 오류를 본다).
+# → 인증을 먼저(안쪽) add 하고, CORS 를 나중에(바깥) add 한다.
+
+# 정적 토큰 인증(선택). BACKEND_API_KEY 가 비어 있으면 no-op(기본 동작 유지).
+add_auth_middleware(app)
+
 # localhost/127.0.0.1(임의 포트)은 regex 로 항상 허용하고,
 # settings.CORS_ORIGINS(콤마 구분)에 지정된 추가 오리진(예: 폰)을 allow_origins 로 더한다.
 app.add_middleware(
@@ -172,9 +180,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# 정적 토큰 인증(선택). BACKEND_API_KEY 가 비어 있으면 no-op(기본 동작 유지).
-add_auth_middleware(app)
 
 
 @app.exception_handler(StarletteHTTPException)
