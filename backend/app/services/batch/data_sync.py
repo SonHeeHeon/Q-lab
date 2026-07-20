@@ -73,12 +73,19 @@ async def run_data_sync(
                 "SELECT DISTINCT stock_code FROM prices_daily ORDER BY stock_code"
             )
         ]
-        price_start = _incremental_start(conn, "prices_daily", today, overlap_days)
+        # Per-instrument MIN(MAX(date)) so a single lagging symbol's gap is
+        # covered rather than masked by the freshest symbol (same class of bug
+        # as the market_index gap below, but per stock_code / ticker).
+        price_start = _incremental_start(
+            conn, "prices_daily", today, overlap_days, group_column="stock_code"
+        )
         caps_start = _incremental_start(
-            conn, "market_caps", today, overlap_days, fallback=price_start
+            conn, "market_caps", today, overlap_days,
+            fallback=price_start, group_column="stock_code",
         )
         flows_start = _incremental_start(
-            conn, "investor_flows_daily", today, overlap_days, fallback=price_start
+            conn, "investor_flows_daily", today, overlap_days,
+            fallback=price_start, group_column="stock_code",
         )
         # market_index is shared by KOSPI/KOSDAQ (pykrx) *and* macro series
         # (SP500/US10Y/USDKRW/VIX, via macro_loader) under different
@@ -96,7 +103,8 @@ async def run_data_sync(
             where="index_code IN ('KOSPI', 'KOSDAQ')",
         )
         us_start = _incremental_start(
-            conn, "prices_daily_us", today, overlap_days, fallback=price_start
+            conn, "prices_daily_us", today, overlap_days,
+            fallback=price_start, group_column="ticker",
         )
 
     if not codes:
@@ -159,6 +167,7 @@ def _incremental_start(
     *,
     fallback: Date | None = None,
     where: str | None = None,
+    group_column: str | None = None,
 ) -> Date:
     """Resume from the table's last date minus overlap.
 
@@ -169,11 +178,26 @@ def _incremental_start(
     ``where`` optionally scopes the MAX(date) lookup (e.g. to a subset of
     index_code values) for tables shared by multiple datasets with different
     sync cadences, so one dataset's freshness can't mask another's gap.
+
+    ``group_column`` makes the resume date the MINIMUM over per-instrument
+    MAX(date) (e.g. per stock_code / ticker). Without it, an unscoped
+    MAX(date) is dragged forward by whichever instrument is freshest, so a
+    single lagging symbol's gap (LRCX stuck at 06-09 while ETFs reached 07-06)
+    is skipped forever. With it, the most-stale instrument's gap is covered.
+    Loaders are idempotent (ON CONFLICT IGNORE) so re-fetching fresh symbols
+    is harmless.
     """
     try:
-        query = f"SELECT MAX(date) FROM {table}"
-        if where:
-            query += f" WHERE {where}"
+        if group_column:
+            query = (
+                f"SELECT MIN(m) FROM (SELECT MAX(date) AS m FROM {table}"
+                + (f" WHERE {where}" if where else "")
+                + f" GROUP BY {group_column})"
+            )
+        else:
+            query = f"SELECT MAX(date) FROM {table}"
+            if where:
+                query += f" WHERE {where}"
         row = conn.execute(query).fetchone()
         last = Date.fromisoformat(str(row[0])) if row and row[0] else None
     except sqlite3.Error:
