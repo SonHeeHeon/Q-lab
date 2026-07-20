@@ -99,3 +99,55 @@ async def test_live_holding_falls_back_on_timeout(monkeypatch):
     monkeypatch.setattr(stocks, "_live_positions", slow)
     monkeypatch.setattr(stocks, "_LIVE_HOLDING_TIMEOUT_SECONDS", 0.05)
     assert await _live_holding_info("LRCX", "US", None) is None
+
+
+# --- TTL cache (avoids re-hitting Toss rate limit while browsing) -------------
+
+async def test_live_positions_caches_within_ttl(monkeypatch):
+    from types import SimpleNamespace
+
+    stocks._POSITIONS_CACHE.clear()
+    calls = {"n": 0}
+
+    class _FakeToss:
+        is_configured = True
+
+        async def get_balance(self, _ref):
+            calls["n"] += 1
+            return SimpleNamespace(positions=[_pos("LRCX", qty=5)])
+
+    async def fake_settings():
+        return {}
+
+    monkeypatch.setattr(stocks, "_settings_map_standalone", fake_settings)
+    monkeypatch.setattr(
+        stocks.TossRestClient, "from_settings_map", staticmethod(lambda rows: _FakeToss())
+    )
+    first = await stocks._live_positions("US")
+    second = await stocks._live_positions("US")
+    assert calls["n"] == 1  # second call served from the TTL cache
+    assert len(first) == 1 and first == second
+    stocks._POSITIONS_CACHE.clear()
+
+
+async def test_live_positions_does_not_cache_total_failure(monkeypatch):
+    stocks._POSITIONS_CACHE.clear()
+
+    class _BoomToss:
+        is_configured = True
+
+        async def get_balance(self, _ref):
+            raise RuntimeError("rate limited")
+
+    async def fake_settings():
+        return {}
+
+    monkeypatch.setattr(stocks, "_settings_map_standalone", fake_settings)
+    monkeypatch.setattr(
+        stocks.TossRestClient, "from_settings_map", staticmethod(lambda rows: _BoomToss())
+    )
+    await stocks._live_positions("US")
+    # An all-failed lookup must NOT be cached, or a transient rate-limit would
+    # pin '미보유' for the whole TTL window.
+    assert "US" not in stocks._POSITIONS_CACHE
+    stocks._POSITIONS_CACHE.clear()

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sqlite3
+import time
 from datetime import date as Date
 from datetime import datetime
 from decimal import Decimal
@@ -28,6 +30,7 @@ from shared.db.models import Setting
 from shared.db.session import ServiceSessionLocal, research_db_path, service_db_path
 
 router = APIRouter(prefix="/api/stocks", tags=["stocks"])
+logger = logging.getLogger(__name__)
 
 
 class PricePoint(BaseModel):
@@ -764,6 +767,12 @@ def _holding_info(symbol: str) -> HoldingInfo:
 # tightly bounded so stock detail never blocks or breaks on broker issues.
 _LIVE_HOLDING_TIMEOUT_SECONDS = 3.0
 
+# Short TTL cache for merged broker positions, keyed by "KR"/"US". Browsing
+# several stock details must not re-hit the balance endpoints each time (Toss
+# rate-limits after a couple of rapid calls). value = (monotonic_ts, positions).
+_POSITIONS_CACHE: dict[str, tuple[float, list["PositionResponse"]]] = {}
+_POSITIONS_CACHE_TTL_SECONDS = 60.0
+
 
 async def _augment_holding(
     symbol: str,
@@ -824,9 +833,24 @@ async def _live_positions(market_country: str) -> list[PositionResponse]:
     005930 삼성전자 as well as LRCX), so Toss is always queried. KIS holds KR
     equities natively across PAPER/REAL/ISA, so it is additionally queried for
     KR stocks. Querying only one broker per market missed KR-in-Toss holdings.
-    Each broker leg is exception-tolerant; the caller wraps this in a timeout.
+
+    A short in-process TTL cache fronts the broker balance calls: browsing
+    several stock details in a row must not re-hit them each time — Toss's
+    balance endpoint rate-limits after a couple of rapid calls, and a swallowed
+    rate-limit would silently drop back to the trades ledger and re-show
+    '미보유' for a Toss-only holding. The cache is populated only when a broker
+    leg actually succeeds, so a transient failure isn't cached as "no holdings".
+    Each broker leg is exception-tolerant (logged, never raised); the caller
+    wraps this in a timeout and falls back to the trades ledger on empty.
     """
+    key = "KR" if market_country == "KR" else "US"
+    now = time.monotonic()
+    cached = _POSITIONS_CACHE.get(key)
+    if cached is not None and now - cached[0] < _POSITIONS_CACHE_TTL_SECONDS:
+        return cached[1]
+
     positions: list[PositionResponse] = []
+    any_success = False
 
     # Toss — US + KR both possible. Mirror portfolio.py's balance path.
     try:
@@ -842,8 +866,9 @@ async def _live_positions(market_country: str) -> list[PositionResponse]:
                 BrokerAccountRef(broker=BrokerType.TOSS, account_id=account_id)
             )
             positions.extend(portfolio.positions)
-    except Exception:
-        pass
+            any_success = True
+    except Exception as exc:  # rate limit / decode / network — never break detail
+        logger.warning("live positions: Toss balance failed: %s", exc)
 
     # KIS — KR equities across PAPER/REAL/ISA (US isn't held natively in KIS).
     if market_country == "KR":
@@ -854,11 +879,18 @@ async def _live_positions(market_country: str) -> list[PositionResponse]:
                 return_exceptions=True,
             )
             for result in results:
-                if not isinstance(result, Exception):
+                if isinstance(result, Exception):
+                    logger.warning("live positions: KIS balance failed: %s", result)
+                else:
                     positions.extend(result.positions)
-        except Exception:
-            pass
+                    any_success = True
+        except Exception as exc:
+            logger.warning("live positions: KIS balance failed: %s", exc)
 
+    # Only cache real answers — never cache an all-failed empty list, or a
+    # transient rate-limit would pin '미보유' for the whole TTL window.
+    if any_success:
+        _POSITIONS_CACHE[key] = (now, positions)
     return positions
 
 
