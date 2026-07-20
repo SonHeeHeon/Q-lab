@@ -12,14 +12,20 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
+from sqlalchemy import select
 
-from backend.app.schemas.portfolio import ApiEnvelope
+from backend.app.core.config import settings
+from backend.app.schemas.portfolio import ApiEnvelope, PositionResponse
+from backend.app.services.brokers.base import BrokerAccountRef
+from backend.app.services.kis.rest_client import KISRestClient
 from backend.app.services.market_data.quotes import fetch_current_quotes
+from backend.app.services.toss.rest_client import TossRestClient
 from research.factors.common import normalize_code
 from research.factors.quality import calculate_roa, calculate_roe
 from research.factors.value import calculate_pbr, calculate_per
 from shared.domain.account import AccountType, BrokerType
-from shared.db.session import research_db_path, service_db_path
+from shared.db.models import Setting
+from shared.db.session import ServiceSessionLocal, research_db_path, service_db_path
 
 router = APIRouter(prefix="/api/stocks", tags=["stocks"])
 
@@ -30,10 +36,20 @@ class PricePoint(BaseModel):
     volume: int
 
 
+class Candle(BaseModel):
+    date: Date
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+
+
 class StockSearchResult(BaseModel):
     symbol: str
     code: str
     name: str | None
+    korean_name: str | None = None
     market_country: Literal["KR", "US"]
     broker: BrokerType
     market: str | None
@@ -66,6 +82,7 @@ class StockDetailResponse(BaseModel):
     code: str
     symbol: str
     name: str | None
+    korean_name: str | None = None
     market_country: Literal["KR", "US"] = "KR"
     broker: BrokerType = BrokerType.KIS
     market: str | None
@@ -93,6 +110,30 @@ async def search_stocks(
     return ApiEnvelope(data=results, error=None)
 
 
+@router.get(
+    "/{market_country}/{symbol}/history",
+    response_model=ApiEnvelope[list[Candle]],
+)
+async def get_price_history(
+    market_country: Literal["KR", "US"],
+    symbol: str,
+    interval: Literal["day", "week", "month", "year"] = Query(default="day"),
+    count: int = Query(default=120, ge=1, le=2000),
+    before: Date | None = None,
+) -> ApiEnvelope[list[Candle]]:
+    normalized_market = market_country.upper()
+    normalized_symbol = _normalize_symbol(symbol, normalized_market)
+    candles = await asyncio.to_thread(
+        _build_candles,
+        normalized_symbol,
+        normalized_market,
+        interval,
+        count,
+        before,
+    )
+    return ApiEnvelope(data=candles, error=None)
+
+
 @router.get("/{market_country}/{symbol}", response_model=ApiEnvelope[StockDetailResponse])
 async def get_stock_detail_by_market(
     market_country: Literal["KR", "US"],
@@ -113,6 +154,11 @@ async def get_stock_detail_by_market(
         normalized_symbol,
         normalized_market,
     )
+    response.holding = await _augment_holding(
+        normalized_symbol,
+        normalized_market,
+        response,
+    )
     return ApiEnvelope(data=response, error=None)
 
 
@@ -131,6 +177,7 @@ async def get_stock_detail(
         "KR",
     )
     response.current_quote = await _fetch_current_quote(normalized_code, "KR")
+    response.holding = await _augment_holding(normalized_code, "KR", response)
     return ApiEnvelope(data=response, error=None)
 
 
@@ -188,6 +235,7 @@ def _build_us_stock_detail(
         code=ticker,
         symbol=ticker,
         name=meta.get("name"),
+        korean_name=meta.get("korean_name"),
         market_country="US",
         broker=BrokerType.TOSS,
         market=meta.get("market"),
@@ -290,13 +338,25 @@ def _search_us_stocks(query: str, limit: int) -> list[StockSearchResult]:
     if not _table_exists(research_db_path, "stocks_us"):
         return []
     like = f"%{query}%"
+    # `korean_name` is added by a parallel migration and may not exist yet; detect
+    # it so Korean-language search works once the column lands, without crashing
+    # before it does. LIKE is case-insensitive for ASCII and Hangul has no case,
+    # so the already-normalized query still matches Korean names correctly.
+    has_korean = _column_exists(research_db_path, "stocks_us", "korean_name")
+    select_cols = "ticker, name, exchange, sector, industry, currency"
+    where_clause = "UPPER(ticker) LIKE ?\n               OR UPPER(name) LIKE ?"
+    params: list[object] = [like, like]
+    if has_korean:
+        select_cols += ", korean_name"
+        where_clause += "\n               OR korean_name LIKE ?"
+        params.append(like)
+    params += [query, f"{query}%", query, limit]
     with sqlite3.connect(research_db_path) as conn:
         rows = conn.execute(
-            """
-            SELECT ticker, name, exchange, sector, industry, currency
+            f"""
+            SELECT {select_cols}
             FROM stocks_us
-            WHERE UPPER(ticker) LIKE ?
-               OR UPPER(name) LIKE ?
+            WHERE {where_clause}
             ORDER BY
                 CASE WHEN UPPER(ticker) = ? THEN 0
                      WHEN UPPER(ticker) LIKE ? THEN 1
@@ -305,22 +365,30 @@ def _search_us_stocks(query: str, limit: int) -> list[StockSearchResult]:
                 ticker
             LIMIT ?
             """,
-            [like, like, query, f"{query}%", query, limit],
+            params,
         ).fetchall()
-    return [
-        StockSearchResult(
-            symbol=str(ticker).upper(),
-            code=str(ticker).upper(),
-            name=name,
-            market_country="US",
-            broker=BrokerType.TOSS,
-            market=exchange,
-            sector=sector,
-            industry=industry,
-            currency=currency or "USD",
+    results: list[StockSearchResult] = []
+    for row in rows:
+        if has_korean:
+            ticker, name, exchange, sector, industry, currency, korean_name = row
+        else:
+            ticker, name, exchange, sector, industry, currency = row
+            korean_name = None
+        results.append(
+            StockSearchResult(
+                symbol=str(ticker).upper(),
+                code=str(ticker).upper(),
+                name=name,
+                korean_name=korean_name,
+                market_country="US",
+                broker=BrokerType.TOSS,
+                market=exchange,
+                sector=sector,
+                industry=industry,
+                currency=currency or "USD",
+            )
         )
-        for ticker, name, exchange, sector, industry, currency in rows
-    ]
+    return results
 
 
 def _stock_meta_kr(code: str) -> dict[str, str | None]:
@@ -348,15 +416,22 @@ def _stock_meta_us(ticker: str) -> dict[str, str | None]:
     if not _table_exists(research_db_path, "stocks_us"):
         return {
             "name": None,
+            "korean_name": None,
             "market": None,
             "sector": None,
             "industry": None,
             "currency": "USD",
         }
+    # `korean_name` is populated by a parallel migration; include it only when the
+    # column already exists so this stays independently testable.
+    has_korean = _column_exists(research_db_path, "stocks_us", "korean_name")
+    select_cols = "name, exchange, sector, industry, currency"
+    if has_korean:
+        select_cols += ", korean_name"
     with sqlite3.connect(research_db_path) as conn:
         row = conn.execute(
-            """
-            SELECT name, exchange, sector, industry, currency
+            f"""
+            SELECT {select_cols}
             FROM stocks_us
             WHERE ticker = ?
             """,
@@ -365,14 +440,20 @@ def _stock_meta_us(ticker: str) -> dict[str, str | None]:
     if row is None:
         return {
             "name": None,
+            "korean_name": None,
             "market": None,
             "sector": None,
             "industry": None,
             "currency": "USD",
         }
-    name, exchange, sector, industry, currency = row
+    if has_korean:
+        name, exchange, sector, industry, currency, korean_name = row
+    else:
+        name, exchange, sector, industry, currency = row
+        korean_name = None
     return {
         "name": name,
+        "korean_name": korean_name,
         "market": exchange,
         "sector": sector,
         "industry": industry,
@@ -454,6 +535,128 @@ def _price_history_us(
         for day, close, volume in rows
     ]
     return list(reversed(points))
+
+
+# Approximate calendar days per aggregation bucket. Used only to bound how many
+# daily rows to fetch; the last `count` fully-formed buckets are returned so the
+# extra buffer (see `_build_candles`) absorbs any partial oldest bucket.
+_INTERVAL_DAY_FACTOR = {"day": 1, "week": 7, "month": 31, "year": 366}
+
+
+def _build_candles(
+    symbol: str,
+    market_country: str,
+    interval: str,
+    count: int,
+    before: Date | None,
+) -> list[Candle]:
+    if market_country == "US":
+        as_of = before or _latest_price_date_us(symbol)
+    else:
+        as_of = before or _latest_price_date_kr(symbol)
+    if as_of is None:
+        return []
+    factor = _INTERVAL_DAY_FACTOR.get(interval, 1)
+    # Fetch a little more than strictly needed so the oldest returned bucket is
+    # complete; we then slice to the most recent `count` buckets.
+    day_limit = count * factor + factor * 3 + 10
+    rows = _fetch_daily_ohlc(symbol, market_country, as_of, day_limit)
+    if not rows:
+        return []
+    candles = _aggregate_candles(rows, interval)
+    return candles[-count:]
+
+
+def _fetch_daily_ohlc(
+    symbol: str,
+    market_country: str,
+    as_of: Date,
+    day_limit: int,
+) -> list[tuple[Date, float, float, float, float, int]]:
+    """Return daily OHLC rows (ascending, date <= as_of) as (date, o, h, l, c, v).
+
+    Both tables carry real open/high/low/close/volume, so we read them directly.
+    Should a US source ever be close-only (open=high=low=close, volume=0) the
+    null-to-close fallback below still yields correct flat-bodied candles.
+    """
+    if market_country == "US":
+        if not _table_exists(research_db_path, "prices_daily_us"):
+            return []
+        table, code_column = "prices_daily_us", "ticker"
+    else:
+        table, code_column = "prices_daily", "stock_code"
+
+    with sqlite3.connect(research_db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT date, open, high, low, close, volume
+            FROM {table}
+            WHERE {code_column} = ?
+              AND date <= ?
+            ORDER BY date DESC
+            LIMIT ?
+            """,
+            [symbol, as_of.isoformat(), day_limit],
+        ).fetchall()
+    out: list[tuple[Date, float, float, float, float, int]] = []
+    for day, open_, high, low, close, volume in rows:
+        if close is None:
+            continue
+        close_value = float(close)
+        out.append(
+            (
+                Date.fromisoformat(str(day)),
+                float(open_) if open_ is not None else close_value,
+                float(high) if high is not None else close_value,
+                float(low) if low is not None else close_value,
+                close_value,
+                int(volume or 0),
+            )
+        )
+    return list(reversed(out))
+
+
+def _bucket_key(day: Date, interval: str) -> object:
+    if interval == "week":
+        iso = day.isocalendar()
+        return (iso[0], iso[1])
+    if interval == "month":
+        return (day.year, day.month)
+    if interval == "year":
+        return day.year
+    return day.toordinal()
+
+
+def _aggregate_candles(
+    rows: list[tuple[Date, float, float, float, float, int]],
+    interval: str,
+) -> list[Candle]:
+    candles: list[Candle] = []
+    current_key: object = None
+    current: Candle | None = None
+    for day, open_, high, low, close, volume in rows:
+        key = _bucket_key(day, interval)
+        if current is None or key != current_key:
+            if current is not None:
+                candles.append(current)
+            current_key = key
+            current = Candle(
+                date=day,
+                open=open_,
+                high=high,
+                low=low,
+                close=close,
+                volume=volume,
+            )
+        else:
+            current.high = max(current.high, high)
+            current.low = min(current.low, low)
+            current.close = close
+            current.volume += volume
+            current.date = day
+    if current is not None:
+        candles.append(current)
+    return candles
 
 
 def _factor_values(code: str, as_of: Date | None) -> dict[str, float | None]:
@@ -557,6 +760,126 @@ def _holding_info(symbol: str) -> HoldingInfo:
     )
 
 
+# Broker balance calls are async and can be slow or fail; keep the live lookup
+# tightly bounded so stock detail never blocks or breaks on broker issues.
+_LIVE_HOLDING_TIMEOUT_SECONDS = 3.0
+
+
+async def _augment_holding(
+    symbol: str,
+    market_country: str,
+    response: StockDetailResponse,
+) -> HoldingInfo:
+    """Merge live broker positions into the trades-table holding result.
+
+    The local `trades` table only knows about orders placed through this app, so a
+    stock the user holds via KIS/Toss but never traded here shows as '미보유'. We
+    consult live broker positions and, when a matching position is found, treat the
+    broker as authoritative for `is_holding`/`quantity`. On ANY failure (network,
+    timeout, missing credentials) we fall back to the existing trades result.
+    """
+    live = await _live_holding_info(symbol, market_country, response.name)
+    if live is None:
+        return response.holding
+    return HoldingInfo(
+        is_holding=True,
+        quantity=live.quantity,
+        latest_trade_at=response.holding.latest_trade_at,
+    )
+
+
+async def _live_holding_info(
+    symbol: str,
+    market_country: str,
+    meta_name: str | None,
+) -> HoldingInfo | None:
+    """Return a live-broker HoldingInfo, or None to fall back to trades."""
+    try:
+        return await asyncio.wait_for(
+            _fetch_live_holding(symbol, market_country, meta_name),
+            timeout=_LIVE_HOLDING_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        return None
+
+
+async def _fetch_live_holding(
+    symbol: str,
+    market_country: str,
+    meta_name: str | None,
+) -> HoldingInfo | None:
+    positions = await _live_positions(market_country)
+    for position in positions:
+        if _position_matches(position, symbol, market_country, meta_name):
+            quantity = int(position.quantity or 0)
+            if quantity > 0:
+                return HoldingInfo(is_holding=True, quantity=quantity)
+    return None
+
+
+async def _live_positions(market_country: str) -> list[PositionResponse]:
+    if market_country == "US":
+        # US equities are held via Toss; mirror portfolio.py's balance path.
+        rows = await _settings_map_standalone()
+        client = TossRestClient.from_settings_map(rows)
+        if not client.is_configured:
+            return []
+        account_id = rows.get("toss_account_seq") or (
+            str(settings.TOSS_ACCOUNT_SEQ)
+            if settings.TOSS_ACCOUNT_SEQ is not None
+            else None
+        )
+        portfolio = await client.get_balance(
+            BrokerAccountRef(broker=BrokerType.TOSS, account_id=account_id)
+        )
+        return list(portfolio.positions)
+
+    # KR equities are held via KIS across PAPER/REAL/ISA accounts.
+    client = KISRestClient()
+    results = await asyncio.gather(
+        *(client.get_balance(account_type) for account_type in AccountType),
+        return_exceptions=True,
+    )
+    positions: list[PositionResponse] = []
+    for result in results:
+        if isinstance(result, Exception):
+            continue
+        positions.extend(result.positions)
+    return positions
+
+
+def _position_matches(
+    position: PositionResponse,
+    symbol: str,
+    market_country: str,
+    meta_name: str | None,
+) -> bool:
+    pos_code = (position.stock_code or "").strip().upper()
+    target = symbol.strip().upper()
+    if not pos_code:
+        return False
+    if market_country == "KR":
+        return pos_code.zfill(6) == target.zfill(6)
+    # US: match on ticker/symbol case-insensitively. The current PositionResponse
+    # does not expose the Toss ISIN, so fall back to a name match for tolerance
+    # when Toss returns a slightly different symbol.
+    if pos_code == target:
+        return True
+    if (
+        meta_name
+        and position.name
+        and position.name.strip().lower() == meta_name.strip().lower()
+    ):
+        return True
+    return False
+
+
+async def _settings_map_standalone() -> dict[str, str]:
+    async with ServiceSessionLocal() as session:
+        result = await session.execute(select(Setting))
+        return {row.key: row.value for row in result.scalars()}
+
+
 def _watchlist_info(symbol: str) -> WatchlistInfo:
     path = Path(service_db_path)
     if not path.exists():
@@ -632,6 +955,14 @@ def _table_exists(path: Path, table_name: str) -> bool:
             [table_name],
         ).fetchone()
     return row is not None
+
+
+def _column_exists(path: Path, table_name: str, column_name: str) -> bool:
+    if not _table_exists(path, table_name):
+        return False
+    with sqlite3.connect(path) as conn:
+        columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table_name})")}
+    return column_name in columns
 
 
 def _float_or_none(value: object) -> float | None:
