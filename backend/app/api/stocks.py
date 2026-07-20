@@ -818,33 +818,47 @@ async def _fetch_live_holding(
 
 
 async def _live_positions(market_country: str) -> list[PositionResponse]:
-    if market_country == "US":
-        # US equities are held via Toss; mirror portfolio.py's balance path.
-        rows = await _settings_map_standalone()
-        client = TossRestClient.from_settings_map(rows)
-        if not client.is_configured:
-            return []
-        account_id = rows.get("toss_account_seq") or (
-            str(settings.TOSS_ACCOUNT_SEQ)
-            if settings.TOSS_ACCOUNT_SEQ is not None
-            else None
-        )
-        portfolio = await client.get_balance(
-            BrokerAccountRef(broker=BrokerType.TOSS, account_id=account_id)
-        )
-        return list(portfolio.positions)
+    """Live positions across every broker that could custody this stock.
 
-    # KR equities are held via KIS across PAPER/REAL/ISA accounts.
-    client = KISRestClient()
-    results = await asyncio.gather(
-        *(client.get_balance(account_type) for account_type in AccountType),
-        return_exceptions=True,
-    )
+    Toss custodies BOTH US and KR equities (a user's Toss account can hold
+    005930 삼성전자 as well as LRCX), so Toss is always queried. KIS holds KR
+    equities natively across PAPER/REAL/ISA, so it is additionally queried for
+    KR stocks. Querying only one broker per market missed KR-in-Toss holdings.
+    Each broker leg is exception-tolerant; the caller wraps this in a timeout.
+    """
     positions: list[PositionResponse] = []
-    for result in results:
-        if isinstance(result, Exception):
-            continue
-        positions.extend(result.positions)
+
+    # Toss — US + KR both possible. Mirror portfolio.py's balance path.
+    try:
+        rows = await _settings_map_standalone()
+        toss = TossRestClient.from_settings_map(rows)
+        if toss.is_configured:
+            account_id = rows.get("toss_account_seq") or (
+                str(settings.TOSS_ACCOUNT_SEQ)
+                if settings.TOSS_ACCOUNT_SEQ is not None
+                else None
+            )
+            portfolio = await toss.get_balance(
+                BrokerAccountRef(broker=BrokerType.TOSS, account_id=account_id)
+            )
+            positions.extend(portfolio.positions)
+    except Exception:
+        pass
+
+    # KIS — KR equities across PAPER/REAL/ISA (US isn't held natively in KIS).
+    if market_country == "KR":
+        try:
+            kis = KISRestClient()
+            results = await asyncio.gather(
+                *(kis.get_balance(account_type) for account_type in AccountType),
+                return_exceptions=True,
+            )
+            for result in results:
+                if not isinstance(result, Exception):
+                    positions.extend(result.positions)
+        except Exception:
+            pass
+
     return positions
 
 

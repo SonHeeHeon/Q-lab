@@ -56,6 +56,25 @@ def test_incremental_start_resumes_with_overlap(tmp_path: Path) -> None:
         assert bare == TODAY - timedelta(days=5)
 
 
+def test_incremental_start_per_instrument_covers_laggard(tmp_path: Path) -> None:
+    # One ticker fresh (07-04), one lagging (06-08). A global MAX(date) is
+    # dragged forward by the fresh ticker and would skip the laggard's gap
+    # forever; group_column resumes from the laggard so its gap is covered.
+    db = tmp_path / "research.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE prices_daily_us (ticker TEXT, date TEXT)")
+        conn.executemany(
+            "INSERT INTO prices_daily_us VALUES (?,?)",
+            [("FRESH", "2026-07-04"), ("FRESH", "2026-06-08"), ("LAG", "2026-06-08")],
+        )
+        glob = ds._incremental_start(conn, "prices_daily_us", TODAY, 5)
+        per = ds._incremental_start(
+            conn, "prices_daily_us", TODAY, 5, group_column="ticker"
+        )
+    assert glob == date(2026, 6, 29)  # 07-04 − 5d: laggard's gap SKIPPED (the bug)
+    assert per == date(2026, 6, 3)    # 06-08 − 5d: laggard covered (the fix)
+
+
 async def test_run_data_sync_wires_loaders(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db = tmp_path / "research.db"
     _make_research_db(db)

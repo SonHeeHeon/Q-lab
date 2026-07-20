@@ -313,6 +313,14 @@ async def _run_startup_data_sync() -> None:
         await asyncio.sleep(2)  # let the rest of startup settle first
         summary = await run_data_sync()
         logger.info("startup data sync complete: %s", summary.to_dict())
+        # A transient failure in one leg (e.g. macro/yfinance) leaves that
+        # dataset stale until the next restart when the cron is off. Retry
+        # once after a short backoff; run_data_sync is idempotent+incremental
+        # so a successful leg just resumes from where it left off.
+        if getattr(summary, "errors", 0):
+            await asyncio.sleep(60)
+            retry = await run_data_sync()
+            logger.info("startup data sync retry: %s", retry.to_dict())
     except asyncio.CancelledError:
         raise
     except Exception:
