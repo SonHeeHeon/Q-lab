@@ -214,6 +214,14 @@ enum BacktestUniverse {
   const BacktestUniverse(this.wire, this.label);
   final String wire;
   final String label;
+
+  /// Safe wire-value lookup for presets loaded from the backend — an
+  /// unrecognized universe (e.g. backend-only `KOSDAQ150`) falls back to
+  /// KOSPI200 rather than throwing.
+  static BacktestUniverse fromWire(String? s) => BacktestUniverse.values.firstWhere(
+        (e) => e.wire == s,
+        orElse: () => BacktestUniverse.kospi200,
+      );
 }
 
 enum BacktestRebalanceFreq {
@@ -224,16 +232,38 @@ enum BacktestRebalanceFreq {
   const BacktestRebalanceFreq(this.wire, this.label);
   final String wire;
   final String label;
+
+  static BacktestRebalanceFreq fromWire(String? s) => BacktestRebalanceFreq.values.firstWhere(
+        (e) => e.wire == s,
+        orElse: () => BacktestRebalanceFreq.monthly,
+      );
 }
 
 enum BacktestTransform { raw('RAW'), zscore('ZSCORE'), rank('RANK');
   const BacktestTransform(this.wire);
   final String wire;
+
+  static BacktestTransform fromWire(String? s) => BacktestTransform.values.firstWhere(
+        (e) => e.wire == s,
+        orElse: () => BacktestTransform.zscore,
+      );
 }
 
 enum BacktestFilterOp { gt('GT'), gte('GTE'), lt('LT'), lte('LTE'), between('BETWEEN');
   const BacktestFilterOp(this.wire);
   final String wire;
+
+  /// Safe wire-value lookup. The flat filter editor only offers scalar
+  /// comparisons (GT/GTE/LT/LTE) — a BETWEEN (range) filter loaded from a
+  /// preset falls back to GTE instead of tripping the op dropdown's "value
+  /// must match exactly one item" assertion (BETWEEN is never a
+  /// selectable item there).
+  static BacktestFilterOp fromWire(String? s) {
+    for (final op in [gt, gte, lt, lte]) {
+      if (op.wire == s) return op;
+    }
+    return gte;
+  }
 }
 
 class StrategyDefinitionDraft {
@@ -249,6 +279,28 @@ class StrategyDefinitionDraft {
     DateTime? endDate,
   })  : startDate = startDate ?? DateTime(2025, 7, 1),
         endDate = endDate ?? DateTime(2026, 5, 27);
+
+  /// Maps a *flat* preset (`is_grouped == false`, e.g. value_v1) fetched
+  /// from `GET /api/backtest/strategies/{name}` into an editable draft.
+  /// Grouped presets (`groups` non-empty) must NOT go through this path —
+  /// their scoring can't round-trip through flat factors; see
+  /// `BuilderNotifier.loadPreset`.
+  factory StrategyDefinitionDraft.fromFlatPreset(Map<String, dynamic> j) =>
+      StrategyDefinitionDraft(
+        name: (j['name'] as String?) ?? 'my_strategy',
+        description: (j['description'] as String?) ?? '',
+        universe: BacktestUniverse.fromWire(j['universe'] as String?),
+        rebalanceFreq: BacktestRebalanceFreq.fromWire(j['rebalance_freq'] as String?),
+        factors: ((j['factors'] as List?) ?? const [])
+            .map((e) => FactorWeightDraft.fromJson(asJsonMap(e)))
+            .toList(),
+        filters: ((j['filters'] as List?) ?? const [])
+            .map((e) => FilterRuleDraft.fromJson(asJsonMap(e)))
+            .toList(),
+        topN: j['top_n'] == null ? 20 : _i(j['top_n']),
+        startDate: j['start_date'] != null ? DateTime.parse(j['start_date'] as String) : null,
+        endDate: j['end_date'] != null ? DateTime.parse(j['end_date'] as String) : null,
+      );
 
   final String name;
   final String description;
@@ -291,21 +343,32 @@ class StrategyDefinitionDraft {
         'factors': [for (final f in factors) f.toJson()],
         'filters': [for (final f in filters) f.toJson()],
         'top_n': topN,
-        'start_date': _dateStr(startDate),
-        'end_date': _dateStr(endDate),
+        'start_date': backtestDateStr(startDate),
+        'end_date': backtestDateStr(endDate),
       };
-
-  static String _dateStr(DateTime d) =>
-      '${d.year.toString().padLeft(4, '0')}-'
-      '${d.month.toString().padLeft(2, '0')}-'
-      '${d.day.toString().padLeft(2, '0')}';
 }
+
+/// Formats a date as `yyyy-MM-dd` — the wire format `StrategyDefinition`
+/// expects for `start_date`/`end_date`. Shared by [StrategyDefinitionDraft.
+/// toJson] and the raw-preset date-override path (a grouped preset's dates
+/// live as plain strings in the fetched JSON, not [DateTime]).
+String backtestDateStr(DateTime d) =>
+    '${d.year.toString().padLeft(4, '0')}-'
+    '${d.month.toString().padLeft(2, '0')}-'
+    '${d.day.toString().padLeft(2, '0')}';
 
 class FactorWeightDraft {
   FactorWeightDraft({required this.factor, required this.weight, this.transform = BacktestTransform.zscore});
   final String factor;
   final double weight;
   final BacktestTransform transform;
+
+  factory FactorWeightDraft.fromJson(Map<String, dynamic> j) => FactorWeightDraft(
+        factor: j['factor'] as String,
+        weight: _d(j['weight']),
+        transform: BacktestTransform.fromWire(j['transform'] as String?),
+      );
+
   Map<String, dynamic> toJson() => {
         'factor': factor,
         'weight': weight,
@@ -318,11 +381,64 @@ class FilterRuleDraft {
   final String field;
   final BacktestFilterOp op;
   final dynamic value; // num or List<num>
+
+  /// Field names are uppercased to match [kFilterFields] — the backend
+  /// engine itself uppercases `rule.field` before comparing
+  /// (`research/backtest/engine.py`), so presets authored with lowercase
+  /// YAML keys (`market_cap`) still resolve to a valid dropdown item
+  /// instead of tripping Flutter's "value must match exactly one item"
+  /// assertion.
+  factory FilterRuleDraft.fromJson(Map<String, dynamic> j) => FilterRuleDraft(
+        field: (j['field'] as String).toUpperCase(),
+        op: BacktestFilterOp.fromWire(j['op'] as String?),
+        value: j['value'],
+      );
+
   Map<String, dynamic> toJson() => {
         'field': field,
         'op': op.wire,
         'value': value,
       };
+}
+
+/// Lightweight preset metadata from `GET /api/backtest/strategies` — enough
+/// to render the builder's preset dropdown without fetching every full
+/// definition upfront.
+class StrategyPresetSummary {
+  StrategyPresetSummary({
+    required this.name,
+    required this.description,
+    this.universe,
+    this.rebalanceFreq,
+    this.topN,
+    required this.isPrivate,
+    required this.isGrouped,
+  });
+
+  final String name;
+  final String description;
+  final String? universe;
+  final String? rebalanceFreq;
+  final int? topN;
+
+  /// Loaded from `research/strategies/private/` (gitignored, e.g.
+  /// qlab_alpha_v2) rather than the public `research/strategies/` dir.
+  final bool isPrivate;
+
+  /// True when the preset scores via `groups` (composite scorer) instead
+  /// of flat `factors` — the builder must use it read-only/verbatim
+  /// rather than loading it into the editable factor list.
+  final bool isGrouped;
+
+  factory StrategyPresetSummary.fromJson(Map<String, dynamic> j) => StrategyPresetSummary(
+        name: j['name'] as String,
+        description: (j['description'] as String?) ?? '',
+        universe: j['universe'] as String?,
+        rebalanceFreq: j['rebalance_freq'] as String?,
+        topN: j['top_n'] == null ? null : _i(j['top_n']),
+        isPrivate: (j['is_private'] as bool?) ?? false,
+        isGrouped: (j['is_grouped'] as bool?) ?? false,
+      );
 }
 
 // ---------------------------------------------------------------------------
@@ -449,6 +565,43 @@ class BacktestApi {
     final res = await dio.post<dynamic>(
       '/api/backtest/run',
       data: draft.toJson(),
+      options: Options(
+        receiveTimeout: const Duration(seconds: 300),
+        sendTimeout: const Duration(seconds: 300),
+      ),
+    );
+    return BacktestRunResult.fromJson(asJsonMap(res.data));
+  }
+
+  /// Lists usable strategy presets (private dir shadows public) for the
+  /// builder's preset dropdown.
+  Future<List<StrategyPresetSummary>> listStrategies() async {
+    final dio = _ref.read(dioProvider);
+    final res = await dio.get<dynamic>('/api/backtest/strategies');
+    final list = (res.data as List?) ?? const [];
+    return list.map((e) => StrategyPresetSummary.fromJson(asJsonMap(e))).toList();
+  }
+
+  /// Fetches the full `StrategyDefinition` JSON for one preset — includes
+  /// `groups`/`min_groups`/`winsor_pct`/etc. that the flat
+  /// [StrategyDefinitionDraft] cannot represent. Returned raw (not parsed
+  /// into a Dart model) because grouped presets are submitted verbatim via
+  /// [runRawStrategy] rather than round-tripped through the draft.
+  Future<Map<String, dynamic>> getStrategy(String name) async {
+    final dio = _ref.read(dioProvider);
+    final res = await dio.get<dynamic>('/api/backtest/strategies/$name');
+    return asJsonMap(res.data);
+  }
+
+  /// Runs a raw `StrategyDefinition` JSON verbatim (with optional
+  /// top_n/date overrides already merged in by the caller) — the "이 공식
+  /// 그대로 사용" path for grouped presets, which can't round-trip through
+  /// [StrategyDefinitionDraft.toJson].
+  Future<BacktestRunResult> runRawStrategy(Map<String, dynamic> strategy) async {
+    final dio = _ref.read(dioProvider);
+    final res = await dio.post<dynamic>(
+      '/api/backtest/run',
+      data: strategy,
       options: Options(
         receiveTimeout: const Duration(seconds: 300),
         sendTimeout: const Duration(seconds: 300),

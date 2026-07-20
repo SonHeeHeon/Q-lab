@@ -16,6 +16,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
+import '../../../data/api/api_client.dart';
 import '../../../data/api/backtest_api.dart';
 import 'builder_controller.dart';
 
@@ -28,6 +29,10 @@ class BuilderScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(builderProvider);
     final notifier = ref.read(builderProvider.notifier);
+    // What will actually be POSTed — the raw preset verbatim in grouped
+    // mode, or the editable draft otherwise. Drives the JSON preview card.
+    final previewJson =
+        state.isGroupedPresetMode ? state.groupedPreset! : state.draft.toJson();
 
     return Scaffold(
       appBar: AppBar(
@@ -68,17 +73,24 @@ class BuilderScreen extends ConsumerWidget {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
         children: [
-          _MetaSection(state: state, notifier: notifier),
+          _PresetSection(state: state, notifier: notifier),
           const SizedBox(height: 20),
-          _UniverseAndRebalanceSection(state: state, notifier: notifier),
-          const SizedBox(height: 20),
-          _FactorsSection(state: state, notifier: notifier),
-          const SizedBox(height: 20),
-          _FiltersSection(state: state, notifier: notifier),
-          const SizedBox(height: 20),
+          if (state.isGroupedPresetMode) ...[
+            _GroupedPresetSummaryCard(state: state),
+            const SizedBox(height: 20),
+          ] else ...[
+            _MetaSection(state: state, notifier: notifier),
+            const SizedBox(height: 20),
+            _UniverseAndRebalanceSection(state: state, notifier: notifier),
+            const SizedBox(height: 20),
+            _FactorsSection(state: state, notifier: notifier),
+            const SizedBox(height: 20),
+            _FiltersSection(state: state, notifier: notifier),
+            const SizedBox(height: 20),
+          ],
           _TopNAndDatesSection(state: state, notifier: notifier),
           const SizedBox(height: 20),
-          _JsonPreviewCard(state: state),
+          _JsonPreviewCard(json: previewJson),
           if (state.lastError != null) ...[
             const SizedBox(height: 12),
             Container(
@@ -135,6 +147,204 @@ class _SectionHeader extends StatelessWidget {
       ),
     );
   }
+}
+
+// ---------------------------------------------------------------------------
+// Preset picker
+// ---------------------------------------------------------------------------
+
+/// Preset dropdown — "직접 만들기" (scratch) or one of
+/// `GET /api/backtest/strategies`. Flat presets load into the editable
+/// draft; grouped presets (qlab_alpha_v2 등) switch the screen into the
+/// read-only "이 공식 그대로 사용" mode via [_GroupedPresetSummaryCard].
+class _PresetSection extends ConsumerWidget {
+  const _PresetSection({required this.state, required this.notifier});
+  final BuilderState state;
+  final BuilderNotifier notifier;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final presetsAsync = ref.watch(strategyPresetsProvider);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const _SectionHeader(
+              title: '📚 프리셋',
+              subtitle: '미리 만든 전략을 그대로 쓰거나 초안으로 불러와 편집하세요.',
+            ),
+            presetsAsync.when(
+              data: (presets) {
+                final names = presets.map((p) => p.name).toSet();
+                return DropdownButtonFormField<String?>(
+                  initialValue: state.selectedPresetName,
+                  isDense: true,
+                  decoration: const InputDecoration(labelText: '전략 프리셋', isDense: true),
+                  items: [
+                    const DropdownMenuItem<String?>(value: null, child: Text('✏️ 직접 만들기')),
+                    for (final p in presets)
+                      DropdownMenuItem<String?>(
+                        value: p.name,
+                        child: Text(
+                          '${p.isGrouped ? '📐' : '🧮'} ${p.name}${p.isPrivate ? ' 🔒' : ''}',
+                          style: const TextStyle(fontSize: 13),
+                        ),
+                      ),
+                    // 방어: 선택된 프리셋이 목록에서 사라진 경우(새로고침 등)에도
+                    // Dropdown의 "값이 항목과 정확히 하나 일치해야 함" 단언이
+                    // 터지지 않도록 항목을 보강한다.
+                    if (state.selectedPresetName != null &&
+                        !names.contains(state.selectedPresetName))
+                      DropdownMenuItem<String?>(
+                        value: state.selectedPresetName,
+                        child: Text('${state.selectedPresetName} (목록에 없음)'),
+                      ),
+                  ],
+                  onChanged: state.busy
+                      ? null
+                      : (v) {
+                          if (v == null) {
+                            notifier.clearPreset();
+                          } else {
+                            notifier.loadPreset(v);
+                          }
+                        },
+                );
+              },
+              loading: () => const Padding(
+                padding: EdgeInsets.symmetric(vertical: 12),
+                child: LinearProgressIndicator(),
+              ),
+              error: (e, _) => Text(
+                '프리셋 목록을 불러오지 못했습니다: $e',
+                style: theme.textTheme.bodySmall?.copyWith(color: Colors.redAccent),
+              ),
+            ),
+            if (state.selectedPresetName != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                state.isGroupedPresetMode
+                    ? '📐 그룹형 전략 — 방정식은 편집할 수 없고 그대로 실행됩니다 (Top N·기간만 조정 가능).'
+                    : '🧮 평탄(factors) 전략 — 초안으로 불러왔습니다. 자유롭게 편집할 수 있습니다.',
+                style: theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.outline),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Read-only "이 공식 그대로 사용" summary for a grouped preset — universe,
+/// rebalance, top_n, group weights + factors, filters, band_trim. The flat
+/// factor/filter editors are hidden while this is shown; `run()` submits
+/// the raw JSON verbatim (see `BuilderNotifier.run`).
+class _GroupedPresetSummaryCard extends StatelessWidget {
+  const _GroupedPresetSummaryCard({required this.state});
+  final BuilderState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final preset = state.groupedPreset!;
+    final groups = ((preset['groups'] as List?) ?? const []).map(asJsonMap).toList();
+    final filters = ((preset['filters'] as List?) ?? const []).map(asJsonMap).toList();
+    final bandTrim = preset['band_trim_threshold'];
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _SectionHeader(
+              title: '📐 ${preset['name'] ?? ''}',
+              subtitle: (preset['description'] as String?) ?? '',
+            ),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                Chip(label: Text(_universeLabel(preset['universe'] as String?))),
+                Chip(label: Text('${_rebalanceLabel(preset['rebalance_freq'] as String?)} 리밸런싱')),
+                Chip(label: Text('Top ${state.draft.topN}')),
+                if (bandTrim != null) Chip(label: Text('밴드트림 ×$bandTrim')),
+              ],
+            ),
+            const SizedBox(height: 14),
+            Text('그룹 가중치', style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800)),
+            const SizedBox(height: 6),
+            for (final g in groups)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(
+                      width: 92,
+                      child: Text('${g['name']}', style: const TextStyle(fontWeight: FontWeight.w700)),
+                    ),
+                    SizedBox(
+                      width: 48,
+                      child: Text(
+                        '${(((g['weight'] as num?)?.toDouble() ?? 0) * 100).toStringAsFixed(0)}%',
+                        style: const TextStyle(fontFamily: 'monospace', fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                    Expanded(
+                      child: Wrap(
+                        spacing: 4,
+                        runSpacing: 4,
+                        children: [
+                          for (final f in ((g['factors'] as List?) ?? const []))
+                            _factorChip(asJsonMap(f)),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            if (filters.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Text('필터', style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800)),
+              const SizedBox(height: 4),
+              for (final f in filters)
+                Text(
+                  '${(f['field'] as String?)?.toUpperCase()} ${f['op']} ${f['value']}',
+                  style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
+                ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+Widget _factorChip(Map<String, dynamic> f) {
+  final higherIsBetter = (f['higher_is_better'] as bool?) ?? true;
+  return Chip(
+    visualDensity: VisualDensity.compact,
+    label: Text('${higherIsBetter ? '▲' : '▼'} ${f['factor']}'),
+  );
+}
+
+String _universeLabel(String? wire) {
+  for (final u in BacktestUniverse.values) {
+    if (u.wire == wire) return u.label;
+  }
+  return wire ?? '-';
+}
+
+String _rebalanceLabel(String? wire) {
+  for (final r in BacktestRebalanceFreq.values) {
+    if (r.wire == wire) return r.label;
+  }
+  return wire ?? '-';
 }
 
 class _MetaSection extends StatelessWidget {
@@ -330,6 +540,14 @@ class _FactorRow extends StatelessWidget {
                         child: Text('${m.label}  ·  ${m.code}',
                             style: const TextStyle(fontSize: 13)),
                       ),
+                    // 방어: 프리셋에서 불러온 팩터가 kFactorCatalog 밖의 코드일 때
+                    // Dropdown의 "값이 항목과 정확히 하나 일치해야 함" 단언을 피한다.
+                    if (!kFactorCatalog.any((m) => m.code == factor.factor))
+                      DropdownMenuItem(
+                        value: factor.factor,
+                        child: Text('${factor.factor} (커스텀)',
+                            style: const TextStyle(fontSize: 13)),
+                      ),
                   ],
                   onChanged: (v) {
                     if (v == null) return;
@@ -432,6 +650,20 @@ class _FiltersSection extends StatelessWidget {
           children: [
             const _SectionHeader(
                 title: '🚧 필터 규칙', subtitle: '선택사항 — 유동성/거래일수 등 사전 필터.'),
+            DropdownButtonFormField<String>(
+              initialValue: state.filterPresetKey,
+              isDense: true,
+              decoration: const InputDecoration(labelText: '필터 프리셋', isDense: true),
+              items: [
+                for (final p in kFilterPresets)
+                  DropdownMenuItem(
+                      value: p.key, child: Text(p.label, style: const TextStyle(fontSize: 13))),
+              ],
+              onChanged: (v) {
+                if (v != null) notifier.applyFilterPreset(v);
+              },
+            ),
+            const SizedBox(height: 10),
             if (state.draft.filters.isEmpty)
               Text('필터 없음', style: theme.textTheme.bodySmall),
             for (var i = 0; i < state.draft.filters.length; i++)
@@ -473,6 +705,13 @@ class _FilterRow extends StatelessWidget {
               items: [
                 for (final f in kFilterFields)
                   DropdownMenuItem(value: f, child: Text(f, style: const TextStyle(fontSize: 13))),
+                // 방어: 프리셋에서 불러온 필터 필드가 kFilterFields 밖일 때
+                // Dropdown의 "값이 항목과 정확히 하나 일치해야 함" 단언을 피한다.
+                if (!kFilterFields.contains(filter.field))
+                  DropdownMenuItem(
+                    value: filter.field,
+                    child: Text('${filter.field} (커스텀)', style: const TextStyle(fontSize: 13)),
+                  ),
               ],
               onChanged: (v) {
                 if (v == null) return;
@@ -545,7 +784,9 @@ class _TopNAndDatesSection extends StatelessWidget {
   final BuilderNotifier notifier;
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    // 방어: 프리셋의 top_n(예: etf_rotation_kr/us = 3)이 kTopNOptions 밖일 때
+    // Dropdown의 "값이 항목과 정확히 하나 일치해야 함" 단언을 피한다.
+    final topNItems = <int>{...kTopNOptions, state.draft.topN}.toList()..sort();
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -555,30 +796,38 @@ class _TopNAndDatesSection extends StatelessWidget {
             const _SectionHeader(title: '🎯 종목수 & 기간'),
             Row(
               children: [
-                Text('Top N', style: theme.textTheme.bodyMedium),
+                Expanded(
+                  child: DropdownButtonFormField<int>(
+                    initialValue: state.draft.topN,
+                    isDense: true,
+                    decoration: const InputDecoration(labelText: 'Top N', isDense: true),
+                    items: [
+                      for (final n in topNItems)
+                        DropdownMenuItem(value: n, child: Text('$n 종목')),
+                    ],
+                    onChanged: (v) {
+                      if (v != null) notifier.setTopN(v);
+                    },
+                  ),
+                ),
                 const SizedBox(width: 12),
-                IconButton(
-                  icon: const Icon(Icons.remove_circle_outline),
-                  onPressed: state.draft.topN <= 1
-                      ? null
-                      : () => notifier.setTopN(state.draft.topN - 1),
-                ),
-                SizedBox(
-                  width: 56,
-                  child: Text('${state.draft.topN}',
-                      textAlign: TextAlign.center,
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w800,
-                        fontFamily: 'monospace',
-                      )),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.add_circle_outline),
-                  onPressed: () => notifier.setTopN(state.draft.topN + 1),
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    initialValue: state.periodPresetKey,
+                    isDense: true,
+                    decoration: const InputDecoration(labelText: '기간', isDense: true),
+                    items: [
+                      for (final p in kPeriodPresets)
+                        DropdownMenuItem(value: p.key, child: Text(p.label)),
+                    ],
+                    onChanged: (v) {
+                      if (v != null) notifier.applyPeriodPreset(v);
+                    },
+                  ),
                 ),
               ],
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 12),
             Row(
               children: [
                 Expanded(
@@ -636,12 +885,16 @@ class _DatePickerField extends StatelessWidget {
 // ---------------------------------------------------------------------------
 
 class _JsonPreviewCard extends StatelessWidget {
-  const _JsonPreviewCard({required this.state});
-  final BuilderState state;
+  const _JsonPreviewCard({required this.json});
+
+  /// What will actually be POSTed — the raw grouped-preset JSON verbatim,
+  /// or `draft.toJson()` in flat/scratch mode. See [BuilderScreen.build].
+  final Map<String, dynamic> json;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final body = const JsonEncoder.withIndent('  ').convert(state.draft.toJson());
+    final body = const JsonEncoder.withIndent('  ').convert(json);
     return Card(
       color: theme.colorScheme.surfaceContainerHigh,
       child: Padding(

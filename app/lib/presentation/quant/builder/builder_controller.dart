@@ -45,12 +45,90 @@ const kFilterFields = <String>[
   'PBR',
 ];
 
+/// Top-N select-box options (2026-07 표준화 기본값: 10/20/30/50, 기본 20).
+const kTopNOptions = <int>[10, 20, 30, 50];
+
+/// One period-preset select-box entry. `years == null` means "직접 지정"
+/// (manual date pickers) — [BuilderNotifier.applyPeriodPreset] leaves the
+/// current dates untouched for that entry; the rest compute
+/// `[today - years, today]`.
+class PeriodPresetMeta {
+  const PeriodPresetMeta(this.key, this.label, this.years);
+  final String key;
+  final String label;
+  final int? years;
+}
+
+const kPeriodPresets = <PeriodPresetMeta>[
+  PeriodPresetMeta('1Y', '최근 1년', 1),
+  PeriodPresetMeta('2Y', '최근 2년', 2),
+  PeriodPresetMeta('3Y', '최근 3년', 3),
+  PeriodPresetMeta('5Y', '최근 5년', 5),
+  PeriodPresetMeta('CUSTOM', '직접 지정', null),
+];
+
+/// One filter-preset select-box entry. `build == null` means "직접 설정"
+/// (leave the current filter rows untouched for manual editing).
+class FilterPresetMeta {
+  const FilterPresetMeta(this.key, this.label, this.build);
+  final String key;
+  final String label;
+  final List<FilterRuleDraft> Function()? build;
+}
+
+List<FilterRuleDraft> kDefaultFilterRules() => [
+      FilterRuleDraft(field: 'MARKET_CAP', op: BacktestFilterOp.gte, value: 100000000000.0),
+      FilterRuleDraft(field: 'TRADING_DAYS_30D', op: BacktestFilterOp.gte, value: 25.0),
+    ];
+
+List<FilterRuleDraft> _noFilterRules() => const [];
+
+const kFilterPresets = <FilterPresetMeta>[
+  FilterPresetMeta('DEFAULT', '기본 (시가총액 1000억+ · 최근 30일 거래일 25+)', kDefaultFilterRules),
+  FilterPresetMeta('NONE', '필터 없음', _noFilterRules),
+  FilterPresetMeta('CUSTOM', '직접 설정', null),
+];
+
+/// Preset list for the builder's dropdown — `GET /api/backtest/strategies`.
+final strategyPresetsProvider = FutureProvider<List<StrategyPresetSummary>>((ref) {
+  return ref.read(backtestApiProvider).listStrategies();
+});
+
 class BuilderState {
-  BuilderState({required this.draft, this.busy = false, this.lastError, this.lastRunId});
+  BuilderState({
+    required this.draft,
+    this.busy = false,
+    this.lastError,
+    this.lastRunId,
+    this.selectedPresetName,
+    this.groupedPreset,
+    this.periodPresetKey = 'CUSTOM',
+    this.filterPresetKey = 'CUSTOM',
+  });
+
   final StrategyDefinitionDraft draft;
   final bool busy;
   final String? lastError;
   final String? lastRunId;
+
+  /// Name of the currently loaded preset (flat or grouped); null = "직접
+  /// 만들기" (scratch).
+  final String? selectedPresetName;
+
+  /// Non-null while a *grouped* preset (`groups` non-empty, e.g.
+  /// qlab_alpha_v2) is active — the raw `StrategyDefinition` JSON fetched
+  /// from the backend, submitted verbatim (plus any top_n/date overrides)
+  /// by [BuilderNotifier.run]. The flat factor/filter editors are hidden
+  /// while this is set; the builder screen shows a read-only summary
+  /// instead ("이 공식 그대로 사용").
+  final Map<String, dynamic>? groupedPreset;
+
+  /// Key into [kPeriodPresets] — drives the period select-box highlight.
+  final String periodPresetKey;
+
+  /// Key into [kFilterPresets] — drives the filter-preset select-box
+  /// highlight (flat/scratch mode only).
+  final String filterPresetKey;
 
   BuilderState copyWith({
     StrategyDefinitionDraft? draft,
@@ -58,28 +136,55 @@ class BuilderState {
     String? lastError,
     bool clearError = false,
     String? lastRunId,
+    String? selectedPresetName,
+    bool clearSelectedPresetName = false,
+    Map<String, dynamic>? groupedPreset,
+    bool clearGroupedPreset = false,
+    String? periodPresetKey,
+    String? filterPresetKey,
   }) =>
       BuilderState(
         draft: draft ?? this.draft,
         busy: busy ?? this.busy,
         lastError: clearError ? null : (lastError ?? this.lastError),
         lastRunId: lastRunId ?? this.lastRunId,
+        selectedPresetName:
+            clearSelectedPresetName ? null : (selectedPresetName ?? this.selectedPresetName),
+        groupedPreset: clearGroupedPreset ? null : (groupedPreset ?? this.groupedPreset),
+        periodPresetKey: periodPresetKey ?? this.periodPresetKey,
+        filterPresetKey: filterPresetKey ?? this.filterPresetKey,
       );
+
+  /// True while a grouped preset ("이 공식 그대로 사용") is active — `run()`
+  /// submits [groupedPreset] verbatim instead of `draft.toJson()`.
+  bool get isGroupedPresetMode => groupedPreset != null;
 
   /// Sum of all factor weights — UI uses this to nudge the user.
   double get weightSum => draft.factors.fold(0, (s, f) => s + f.weight);
-  bool get isValid => draft.factors.isNotEmpty && draft.topN > 0;
+  bool get isValid =>
+      isGroupedPresetMode || (draft.factors.isNotEmpty && draft.topN > 0);
 }
 
 class BuilderNotifier extends Notifier<BuilderState> {
   @override
-  BuilderState build() => BuilderState(
-        draft: StrategyDefinitionDraft(
-          factors: [
-            FactorWeightDraft(factor: 'MOMENTUM_1M', weight: 1.0),
-          ],
-        ),
-      );
+  BuilderState build() {
+    // 기본값 표준화(2026-07): topN=20, 기간=최근 3년, 필터=기본(시가총액/거래일).
+    final end = DateTime.now();
+    final start = DateTime(end.year - 3, end.month, end.day);
+    return BuilderState(
+      draft: StrategyDefinitionDraft(
+        factors: [
+          FactorWeightDraft(factor: 'MOMENTUM_1M', weight: 1.0),
+        ],
+        filters: kDefaultFilterRules(),
+        topN: 20,
+        startDate: start,
+        endDate: end,
+      ),
+      periodPresetKey: '3Y',
+      filterPresetKey: 'DEFAULT',
+    );
+  }
 
   void setName(String v) => state = state.copyWith(draft: state.draft.copyWith(name: v));
   void setDescription(String v) =>
@@ -88,11 +193,126 @@ class BuilderNotifier extends Notifier<BuilderState> {
       state = state.copyWith(draft: state.draft.copyWith(universe: v));
   void setRebalance(BacktestRebalanceFreq v) =>
       state = state.copyWith(draft: state.draft.copyWith(rebalanceFreq: v));
-  void setTopN(int v) => state = state.copyWith(draft: state.draft.copyWith(topN: v));
-  void setStartDate(DateTime d) =>
-      state = state.copyWith(draft: state.draft.copyWith(startDate: d));
-  void setEndDate(DateTime d) =>
-      state = state.copyWith(draft: state.draft.copyWith(endDate: d));
+
+  /// Sets top_n — mirrors into [BuilderState.groupedPreset] too so a
+  /// grouped-preset override survives into the verbatim POST body.
+  void setTopN(int v) {
+    final merged =
+        state.groupedPreset == null ? null : {...state.groupedPreset!, 'top_n': v};
+    state = state.copyWith(draft: state.draft.copyWith(topN: v), groupedPreset: merged);
+  }
+
+  void setStartDate(DateTime d) => _updateDates(start: d);
+  void setEndDate(DateTime d) => _updateDates(end: d);
+
+  /// Manual date-picker edits fall back to "직접 지정" — they no longer
+  /// match any of the [kPeriodPresets] windows once touched by hand.
+  void _updateDates({DateTime? start, DateTime? end}) {
+    final newStart = start ?? state.draft.startDate;
+    final newEnd = end ?? state.draft.endDate;
+    final merged = state.groupedPreset == null
+        ? null
+        : {
+            ...state.groupedPreset!,
+            'start_date': backtestDateStr(newStart),
+            'end_date': backtestDateStr(newEnd),
+          };
+    state = state.copyWith(
+      periodPresetKey: 'CUSTOM',
+      draft: state.draft.copyWith(startDate: newStart, endDate: newEnd),
+      groupedPreset: merged,
+    );
+  }
+
+  /// Applies a period-preset select-box choice. "직접 지정" just switches
+  /// the highlighted key and leaves the current dates for manual editing;
+  /// the rest compute `[today - years, today]`.
+  void applyPeriodPreset(String key) {
+    final meta = kPeriodPresets.firstWhere(
+      (m) => m.key == key,
+      orElse: () => kPeriodPresets.last,
+    );
+    if (meta.years == null) {
+      state = state.copyWith(periodPresetKey: key);
+      return;
+    }
+    final end = DateTime.now();
+    final start = DateTime(end.year - meta.years!, end.month, end.day);
+    final merged = state.groupedPreset == null
+        ? null
+        : {
+            ...state.groupedPreset!,
+            'start_date': backtestDateStr(start),
+            'end_date': backtestDateStr(end),
+          };
+    state = state.copyWith(
+      periodPresetKey: key,
+      draft: state.draft.copyWith(startDate: start, endDate: end),
+      groupedPreset: merged,
+    );
+  }
+
+  // ----- presets -------------------------------------------------------------
+
+  /// Loads a preset by name from `GET /api/backtest/strategies/{name}`.
+  /// - Flat preset (`groups` empty/absent, e.g. value_v1) → mapped into
+  ///   the editable [StrategyDefinitionDraft] so the user can tweak then run.
+  /// - Grouped preset (`groups` non-empty, e.g. qlab_alpha_v2) → switches to
+  ///   read-only "이 공식 그대로 사용" mode; [run] submits the raw JSON
+  ///   verbatim (plus any top_n/date overrides made afterward).
+  Future<void> loadPreset(String name) async {
+    if (state.busy) return;
+    state = state.copyWith(busy: true, clearError: true);
+    try {
+      final full = await ref.read(backtestApiProvider).getStrategy(name);
+      final groups = full['groups'];
+      final isGrouped = groups is List && groups.isNotEmpty;
+      if (isGrouped) {
+        state = state.copyWith(
+          busy: false,
+          clearError: true,
+          selectedPresetName: name,
+          groupedPreset: full,
+          periodPresetKey: 'CUSTOM',
+        );
+      } else {
+        state = state.copyWith(
+          busy: false,
+          clearError: true,
+          selectedPresetName: name,
+          draft: StrategyDefinitionDraft.fromFlatPreset(full),
+          clearGroupedPreset: true,
+          periodPresetKey: 'CUSTOM',
+          filterPresetKey: 'CUSTOM',
+        );
+      }
+    } catch (e) {
+      state = state.copyWith(busy: false, lastError: '$e');
+    }
+  }
+
+  /// "직접 만들기" — clears any loaded preset and resets to a blank flat
+  /// draft with the same sensible defaults as a fresh screen open.
+  void clearPreset() {
+    state = build();
+  }
+
+  // ----- filter presets --------------------------------------------------
+
+  /// Applies a filter-preset select-box choice (flat/scratch mode only —
+  /// a grouped preset keeps its own filters verbatim, see
+  /// `_GroupedPresetSummaryCard`). "직접 설정" leaves the current filter
+  /// rows untouched for manual editing.
+  void applyFilterPreset(String key) {
+    final meta = kFilterPresets.firstWhere(
+      (m) => m.key == key,
+      orElse: () => kFilterPresets.last,
+    );
+    state = state.copyWith(
+      filterPresetKey: key,
+      draft: meta.build == null ? state.draft : state.draft.copyWith(filters: meta.build!()),
+    );
+  }
 
   // ----- factors -----------------------------------------------------------
 
@@ -143,8 +363,11 @@ class BuilderNotifier extends Notifier<BuilderState> {
   }
 
   // ----- filters -----------------------------------------------------------
+  // Manual edits move the filter-preset select-box to "직접 설정" so it
+  // doesn't keep showing "기본"/"필터 없음" once the rows no longer match.
   void addFilter() {
     state = state.copyWith(
+      filterPresetKey: 'CUSTOM',
       draft: state.draft.copyWith(filters: [
         ...state.draft.filters,
         FilterRuleDraft(field: 'TRADING_DAYS_30D', op: BacktestFilterOp.gte, value: 15.0),
@@ -154,13 +377,13 @@ class BuilderNotifier extends Notifier<BuilderState> {
 
   void removeFilter(int idx) {
     final list = [...state.draft.filters]..removeAt(idx);
-    state = state.copyWith(draft: state.draft.copyWith(filters: list));
+    state = state.copyWith(filterPresetKey: 'CUSTOM', draft: state.draft.copyWith(filters: list));
   }
 
   void updateFilter(int idx, FilterRuleDraft v) {
     final list = [...state.draft.filters];
     list[idx] = v;
-    state = state.copyWith(draft: state.draft.copyWith(filters: list));
+    state = state.copyWith(filterPresetKey: 'CUSTOM', draft: state.draft.copyWith(filters: list));
   }
 
   // ----- submit ------------------------------------------------------------
@@ -168,7 +391,12 @@ class BuilderNotifier extends Notifier<BuilderState> {
     if (state.busy) return null;
     state = state.copyWith(busy: true, clearError: true);
     try {
-      final result = await ref.read(backtestApiProvider).runBacktest(state.draft);
+      final api = ref.read(backtestApiProvider);
+      // Grouped presets ("이 공식 그대로 사용") are submitted verbatim —
+      // the flat draft can't represent `groups` scoring at all.
+      final result = state.isGroupedPresetMode
+          ? await api.runRawStrategy(state.groupedPreset!)
+          : await api.runBacktest(state.draft);
       // Cache in the recent-runs map so the detail screen can read equity_curve.
       final cache = ref.read(recentRunResultsProvider);
       ref.read(recentRunResultsProvider.notifier).state = {
