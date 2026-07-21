@@ -95,6 +95,9 @@ class _BackendMissingBlock extends ConsumerWidget {
           ),
         ),
         const SizedBox(height: 24),
+        const _SectionHeader('🌐 백엔드 연결'),
+        const _BackendConnectionBlock(),
+        const SizedBox(height: 24),
         const _SectionHeader('📈 유니버스'),
         const _UniverseBlock(),
         const SizedBox(height: 24),
@@ -111,6 +114,92 @@ class _BackendMissingBlock extends ConsumerWidget {
   }
 }
 
+/// Backend connection settings — base URL + optional API key. Lets the same
+/// build talk to a local (auth-off) or remote/phone (auth-on) backend without
+/// a rebuild. When the backend is unreachable (e.g. auth 401), this block is
+/// how the user fixes it in-app.
+class _BackendConnectionBlock extends ConsumerStatefulWidget {
+  const _BackendConnectionBlock();
+
+  @override
+  ConsumerState<_BackendConnectionBlock> createState() =>
+      _BackendConnectionBlockState();
+}
+
+class _BackendConnectionBlockState
+    extends ConsumerState<_BackendConnectionBlock> {
+  late final TextEditingController _url =
+      TextEditingController(text: ref.read(persistedApiBaseUrlProvider));
+  late final TextEditingController _key =
+      TextEditingController(text: ref.read(persistedApiKeyProvider));
+  bool _obscure = true;
+
+  @override
+  void dispose() {
+    _url.dispose();
+    _key.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    await ref.read(persistedApiBaseUrlProvider.notifier).set(_url.text);
+    await ref.read(persistedApiKeyProvider.notifier).set(_key.text);
+    // Rebuild the Dio client + re-fetch settings against the new connection.
+    ref.invalidate(appSettingsProvider);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('백엔드 연결 설정을 저장했습니다. 다시 불러옵니다…')),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: _url,
+              keyboardType: TextInputType.url,
+              autocorrect: false,
+              decoration: const InputDecoration(
+                labelText: '백엔드 주소',
+                hintText: 'http://127.0.0.1:8000 (비우면 기본값)',
+                helperText: '로컬은 http://127.0.0.1:8000, 폰은 https://<host>.ts.net',
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _key,
+              obscureText: _obscure,
+              autocorrect: false,
+              enableSuggestions: false,
+              decoration: InputDecoration(
+                labelText: 'API 키 (선택)',
+                helperText: '백엔드 .env의 BACKEND_API_KEY와 동일하게. 인증을 끈 로컬이면 비워두세요.',
+                suffixIcon: IconButton(
+                  icon: Icon(_obscure ? Icons.visibility_off : Icons.visibility),
+                  onPressed: () => setState(() => _obscure = !_obscure),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Align(
+              alignment: Alignment.centerRight,
+              child: FilledButton(
+                onPressed: _save,
+                child: const Text('저장 후 다시 연결'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _SettingsBody extends ConsumerWidget {
   const _SettingsBody({required this.settings});
   final AppSettings settings;
@@ -120,6 +209,10 @@ class _SettingsBody extends ConsumerWidget {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        const _SectionHeader('🌐 백엔드 연결'),
+        const _BackendConnectionBlock(),
+        const SizedBox(height: 24),
+
         _SectionHeader('🔐 한국투자증권 (KIS) 계좌'),
         _KisAccountList(settings: settings),
         const SizedBox(height: 24),

@@ -18,6 +18,8 @@ import 'config.dart';
 class _Keys {
   static const themeMode = 'theme_mode';
   static const activeAccount = 'active_account';
+  static const apiKey = 'backend_api_key';
+  static const apiBaseUrl = 'backend_base_url';
 }
 
 /// Resolves once at app start (see main.dart override). Throws if read
@@ -100,3 +102,56 @@ KisAccountType _decodeAccount(String? raw) {
   // Safe default: PAPER (never accidentally operate on real money).
   return KisAccountType.paper;
 }
+
+// ---------------------------------------------------------------------------
+// Backend API key (optional bearer token) — set in Settings so the same build
+// works whether the backend has auth on (phone/remote) or off (local). Empty
+// falls back to the compile-time Env.apiKey. Persisted locally on the device;
+// never sent anywhere except as the Authorization header to our own backend.
+// ---------------------------------------------------------------------------
+
+class ApiKeyNotifier extends Notifier<String> {
+  @override
+  String build() =>
+      ref.read(sharedPreferencesProvider).getString(_Keys.apiKey) ?? '';
+
+  Future<void> set(String key) async {
+    final trimmed = key.trim();
+    state = trimmed;
+    final prefs = ref.read(sharedPreferencesProvider);
+    if (trimmed.isEmpty) {
+      await prefs.remove(_Keys.apiKey);
+    } else {
+      await prefs.setString(_Keys.apiKey, trimmed);
+    }
+  }
+}
+
+final persistedApiKeyProvider =
+    NotifierProvider<ApiKeyNotifier, String>(ApiKeyNotifier.new);
+
+// ---------------------------------------------------------------------------
+// Backend base URL — set in Settings so the app can point at localhost, a LAN
+// IP, or a Tailscale host without a rebuild. Empty falls back to Env.apiBaseUrl.
+// ---------------------------------------------------------------------------
+
+class ApiBaseUrlNotifier extends Notifier<String> {
+  @override
+  String build() =>
+      ref.read(sharedPreferencesProvider).getString(_Keys.apiBaseUrl) ?? '';
+
+  Future<void> set(String url) async {
+    // Strip a trailing slash so `${base}/api/...` never doubles up.
+    final trimmed = url.trim().replaceAll(RegExp(r'/+$'), '');
+    state = trimmed;
+    final prefs = ref.read(sharedPreferencesProvider);
+    if (trimmed.isEmpty) {
+      await prefs.remove(_Keys.apiBaseUrl);
+    } else {
+      await prefs.setString(_Keys.apiBaseUrl, trimmed);
+    }
+  }
+}
+
+final persistedApiBaseUrlProvider =
+    NotifierProvider<ApiBaseUrlNotifier, String>(ApiBaseUrlNotifier.new);

@@ -13,6 +13,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/env.dart';
+import '../../core/preferences.dart';
 import 'mock_interceptor.dart';
 
 /// Safely coerce a JSON value (possibly `Map<dynamic, dynamic>` after
@@ -55,25 +56,40 @@ class ApiError implements Exception {
 }
 
 final dioProvider = Provider<Dio>((ref) {
+  // Base URL: in-app Settings value wins over the compile-time default, so the
+  // app can point at localhost / a LAN IP / a Tailscale host without a rebuild.
+  final persistedBase = ref.watch(persistedApiBaseUrlProvider);
+  final baseUrl = persistedBase.isNotEmpty ? persistedBase : Env.apiBaseUrl;
+
   final dio = Dio(
     BaseOptions(
-      baseUrl: Env.apiBaseUrl,
+      baseUrl: baseUrl,
       connectTimeout: const Duration(seconds: 8),
       receiveTimeout: const Duration(seconds: 12),
       responseType: ResponseType.json,
-      headers: {
-        'Content-Type': 'application/json',
-        // Sent only when the backend auth gate is enabled (BACKEND_API_KEY set
-        // and mirrored into --dart-define=API_KEY). Empty = header omitted, so
-        // the default auth-off/localhost flow is unchanged.
-        if (Env.apiKey.isNotEmpty) 'Authorization': 'Bearer ${Env.apiKey}',
-      },
+      headers: {'Content-Type': 'application/json'},
     ),
   );
 
   if (Env.useMock) {
     dio.interceptors.add(MockInterceptor());
   }
+
+  // Attach the backend API key per-request. The in-app Settings value wins over
+  // the compile-time Env.apiKey; empty = no header (auth-off/localhost). Read at
+  // request time so changing the key in Settings takes effect immediately.
+  dio.interceptors.add(
+    InterceptorsWrapper(
+      onRequest: (options, handler) {
+        final persisted = ref.read(persistedApiKeyProvider);
+        final key = persisted.isNotEmpty ? persisted : Env.apiKey;
+        if (key.isNotEmpty) {
+          options.headers['Authorization'] = 'Bearer $key';
+        }
+        handler.next(options);
+      },
+    ),
+  );
 
   dio.interceptors.add(_EnvelopeInterceptor());
 
