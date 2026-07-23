@@ -16,11 +16,19 @@ import 'api_client.dart';
 
 enum HeatmapMarket {
   kospi('KOSPI'),
-  kosdaq('KOSDAQ');
+  kosdaq('KOSDAQ'),
+  nasdaq100('NASDAQ100');
 
   const HeatmapMarket(this.wire);
   final String wire;
 }
+
+/// True when [market] (a wire value, e.g. `HeatmapResponse.market`) refers
+/// to the US NASDAQ100 heatmap. Used by the screen to switch stock-detail
+/// routing (`/stocks/US/...` vs `/stocks/KR/...`) and currency formatting
+/// ($ vs ₩) without duplicating the NASDAQ100 string literal.
+bool isUsHeatmapMarket(String market) =>
+    market.toUpperCase() == HeatmapMarket.nasdaq100.wire;
 
 enum HeatmapGroupBy {
   sector('sector'),

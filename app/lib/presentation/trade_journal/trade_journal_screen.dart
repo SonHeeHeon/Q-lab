@@ -12,7 +12,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
+import '../../core/theme.dart';
 import '../../data/api/trade_journal_api.dart';
+import '../../domain/entities/account.dart';
 import '../../shared/widgets/empty_state.dart';
 import 'trade_journal_controller.dart';
 
@@ -29,12 +31,6 @@ class TradeJournalScreen extends ConsumerWidget {
       child: Scaffold(
         appBar: AppBar(
           title: const Text('매매일지'),
-          bottom: const TabBar(
-            tabs: [
-              Tab(text: '🚨 미작성'),
-              Tab(text: '📓 전체'),
-            ],
-          ),
           actions: [
             IconButton(
               tooltip: '새로고침',
@@ -46,12 +42,120 @@ class TradeJournalScreen extends ConsumerWidget {
             ),
           ],
         ),
-        body: const TabBarView(
+        body: const Column(
           children: [
-            _MissingTab(),
-            _AllTab(),
+            _AccountFilterBar(),
+            Divider(height: 1),
+            TabBar(
+              tabs: [
+                Tab(text: '🚨 미작성'),
+                Tab(text: '📓 전체'),
+              ],
+            ),
+            Expanded(
+              child: TabBarView(
+                children: [
+                  _MissingTab(),
+                  _AllTab(),
+                ],
+              ),
+            ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Account filter bar — 전체 / 모의 / 실전 / ISA (mirrors portfolio's
+// _BrokerFilterBar). Filters both tabs client-side; the journal only ever
+// contains KIS trades (Toss executions aren't recorded), so there's no
+// Toss option here.
+// ---------------------------------------------------------------------------
+
+class _AccountFilterBar extends ConsumerWidget {
+  const _AccountFilterBar();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final selected = ref.watch(journalAccountFilterProvider);
+    return Padding(
+      padding: const EdgeInsets.only(top: 8, bottom: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                ChoiceChip(
+                  label: const Text('전체'),
+                  selected: selected == null,
+                  onSelected: (_) =>
+                      ref.read(journalAccountFilterProvider.notifier).state = null,
+                ),
+                for (final acc in KisAccount.values) ...[
+                  const SizedBox(width: 8),
+                  ChoiceChip(
+                    avatar: CircleAvatar(
+                      backgroundColor: _accountColor(context, acc),
+                      radius: 8,
+                    ),
+                    label: Text(acc.label),
+                    selected: selected == acc,
+                    onSelected: (_) =>
+                        ref.read(journalAccountFilterProvider.notifier).state = acc,
+                  ),
+                ],
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
+            child: Text(
+              'KIS 체결 거래만 기록됩니다 (토스 체결은 매매일지 대상이 아니에요)',
+              style: theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.outline),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// RED=REAL / YELLOW=ISA / GREEN=PAPER — same coding as the portfolio
+/// screen's account banner, so a color means the same thing app-wide.
+Color _accountColor(BuildContext context, KisAccount account) {
+  final colors = Theme.of(context).extension<AccountColors>()!;
+  return switch (account) {
+    KisAccount.real => colors.real,
+    KisAccount.isa => colors.isa,
+    KisAccount.paper => colors.paper,
+  };
+}
+
+/// Small colored account badge shown on each trade/journal row —
+/// replaces the plain "· PAPER" text suffix for at-a-glance scanning.
+class _AccountBadge extends StatelessWidget {
+  const _AccountBadge({required this.accountType});
+  final String accountType;
+
+  @override
+  Widget build(BuildContext context) {
+    final acc = KisAccount.fromWire(accountType);
+    final c = _accountColor(context, acc);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: c.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        acc.label,
+        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: c),
       ),
     );
   }
@@ -66,21 +170,27 @@ class _MissingTab extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final async = ref.watch(missingTradesProvider);
+    final filter = ref.watch(journalAccountFilterProvider);
     return async.when(
       data: (trades) {
-        if (trades.isEmpty) {
-          return const EmptyState(
+        final filtered =
+            trades.where((t) => matchesAccountFilter(t.accountType, filter)).toList();
+        if (filtered.isEmpty) {
+          final filteredOut = filter != null && trades.isNotEmpty;
+          return EmptyState(
             icon: Icons.check_circle_outline,
-            title: '모두 복기 완료!',
-            subtitle: '훌륭합니다 — 모든 체결된 거래에 매매일지가 작성되어 있어요.',
+            title: filteredOut ? '${filter.label} 계좌: 미작성 거래 없음' : '모두 복기 완료!',
+            subtitle: filteredOut
+                ? '다른 계좌를 선택하거나 전체 보기로 확인하세요.'
+                : '훌륭합니다 — 모든 체결된 거래에 매매일지가 작성되어 있어요.',
             iconColor: Colors.green,
           );
         }
         return ListView.separated(
           padding: const EdgeInsets.symmetric(vertical: 8),
-          itemCount: trades.length,
+          itemCount: filtered.length,
           separatorBuilder: (_, __) => const Divider(height: 1),
-          itemBuilder: (_, i) => _MissingRow(trade: trades[i]),
+          itemBuilder: (_, i) => _MissingRow(trade: filtered[i]),
         );
       },
       loading: () => const Center(child: CircularProgressIndicator()),
@@ -104,8 +214,14 @@ class _MissingRow extends ConsumerWidget {
         child: Text(isBuy ? '매수' : '매도',
             style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w700)),
       ),
-      title: Text('${trade.stockCode}  ·  ${trade.accountType}',
-          style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
+      title: Row(
+        children: [
+          Text(trade.stockCode,
+              style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
+          const SizedBox(width: 6),
+          _AccountBadge(accountType: trade.accountType),
+        ],
+      ),
       subtitle: Text(
         '${_dateTime.format(trade.executedAt.toLocal())}  ·  '
         '${trade.quantity}주 @ ₩${_krw.format(trade.price)}',
@@ -190,20 +306,27 @@ class _AllTab extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final async = ref.watch(journalListProvider);
+    final filter = ref.watch(journalAccountFilterProvider);
     return async.when(
       data: (list) {
-        if (list.isEmpty) {
-          return const EmptyState(
+        final filtered = list
+            .where((j) => matchesAccountFilter(j.trade.accountType, filter))
+            .toList();
+        if (filtered.isEmpty) {
+          final filteredOut = filter != null && list.isNotEmpty;
+          return EmptyState(
             icon: Icons.menu_book_outlined,
-            title: '아직 저장된 매매일지가 없습니다',
-            subtitle: '거래 후 미작성 탭에서 복기를 작성하면 여기에 누적됩니다.',
+            title: filteredOut ? '${filter.label} 계좌 일지가 없습니다' : '아직 저장된 매매일지가 없습니다',
+            subtitle: filteredOut
+                ? '다른 계좌를 선택하거나 전체 보기로 확인하세요.'
+                : '거래 후 미작성 탭에서 복기를 작성하면 여기에 누적됩니다.',
           );
         }
         return ListView.separated(
           padding: const EdgeInsets.symmetric(vertical: 8),
-          itemCount: list.length,
+          itemCount: filtered.length,
           separatorBuilder: (_, __) => const Divider(height: 1),
-          itemBuilder: (_, i) => _JournalRow(journal: list[i]),
+          itemBuilder: (_, i) => _JournalRow(journal: filtered[i]),
         );
       },
       loading: () => const Center(child: CircularProgressIndicator()),
@@ -233,12 +356,19 @@ class _JournalRow extends ConsumerWidget {
       ),
       title: Row(
         children: [
-          Text('${t.stockCode}  ·  ${t.accountType}',
+          Text(t.stockCode,
               style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
           const SizedBox(width: 6),
-          Text('${_dateTime.format(t.executedAt.toLocal())}  ·  '
+          _AccountBadge(accountType: t.accountType),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              '${_dateTime.format(t.executedAt.toLocal())}  ·  '
               '${t.quantity}주 @ ₩${_krw.format(t.price)}',
-              style: theme.textTheme.bodySmall),
+              style: theme.textTheme.bodySmall,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
           const Spacer(),
           if (!hasReview)
             Container(

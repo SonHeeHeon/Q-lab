@@ -11,6 +11,7 @@ import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
 import '../../data/api/heatmap_api.dart';
+import '../../shared/format/money.dart';
 import '../../shared/widgets/treemap.dart';
 import 'heatmap_controller.dart';
 import 'session_badge.dart';
@@ -76,6 +77,7 @@ class _Toolbar extends ConsumerWidget {
             segments: const [
               ButtonSegment(value: HeatmapMarket.kospi, label: Text('KOSPI')),
               ButtonSegment(value: HeatmapMarket.kosdaq, label: Text('KOSDAQ')),
+              ButtonSegment(value: HeatmapMarket.nasdaq100, label: Text('NASDAQ100')),
             ],
             selected: {market},
             onSelectionChanged: (s) =>
@@ -155,7 +157,7 @@ class _Body extends StatelessWidget {
                   ),
               ],
               labelBuilder: (n) => n.stockName ?? n.stockCode ?? n.label,
-              onCellTap: (n) => _showStockDetailSheet(context, n),
+              onCellTap: (n) => _showStockDetailSheet(context, n, market: data.market),
             ),
           ),
         ),
@@ -295,7 +297,8 @@ class _WarningBadge extends StatelessWidget {
   }
 }
 
-void _showStockDetailSheet(BuildContext context, HeatmapNode node) {
+void _showStockDetailSheet(BuildContext context, HeatmapNode node, {required String market}) {
+  final isUs = isUsHeatmapMarket(market);
   showModalBottomSheet(
     context: context,
     showDragHandle: true,
@@ -304,6 +307,7 @@ void _showStockDetailSheet(BuildContext context, HeatmapNode node) {
       final mc = node.marketCap;
       final close = node.close;
       final vol = node.volume;
+      final currency = isUs ? 'USD' : 'KRW';
       return Padding(
         padding: const EdgeInsets.all(20),
         child: Column(
@@ -336,8 +340,10 @@ void _showStockDetailSheet(BuildContext context, HeatmapNode node) {
             Text(node.stockCode ?? '', style: theme.textTheme.bodySmall),
             const SizedBox(height: 16),
             if (close != null)
-              _KV(label: '종가', value: '₩${_krw.format(close)}'),
-            if (mc != null) _KV(label: '시가총액', value: '₩${_krw.format(mc)}'),
+              _KV(label: '종가', value: formatNative(close, currency)),
+            // US market_cap is null for now (backfilled separately) — the
+            // `mc != null` guard hides this row rather than showing 0/blank.
+            if (mc != null) _KV(label: '시가총액', value: formatNative(mc, currency)),
             if (vol != null) _KV(label: '거래량', value: _krw.format(vol)),
             if (node.sector != null) _KV(label: '섹터', value: node.sector!),
             if ((node.stockCode ?? '').isNotEmpty) ...[
@@ -348,7 +354,7 @@ void _showStockDetailSheet(BuildContext context, HeatmapNode node) {
                   onPressed: () {
                     Navigator.of(sheetCtx).pop();
                     context.push(
-                      '/stocks/KR/${Uri.encodeComponent(node.stockCode!)}',
+                      '/stocks/${isUs ? 'US' : 'KR'}/${Uri.encodeComponent(node.stockCode!)}',
                     );
                   },
                   icon: const Icon(Icons.candlestick_chart_outlined),
