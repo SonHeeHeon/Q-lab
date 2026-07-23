@@ -14,6 +14,7 @@ import '../../../shared/widgets/empty_state.dart';
 import 'backtest_lab_controller.dart';
 
 final _date = DateFormat('yyyy-MM-dd');
+final _runTs = DateFormat('yyyy-MM-dd HH:mm');
 
 class BacktestLabScreen extends ConsumerWidget {
   const BacktestLabScreen({super.key});
@@ -22,6 +23,7 @@ class BacktestLabScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final async = ref.watch(backtestRunsProvider);
     final sortBy = ref.watch(runSortByProvider);
+    final modelFilter = ref.watch(runModelFilterProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -53,50 +55,113 @@ class BacktestLabScreen extends ConsumerWidget {
         ],
       ),
       body: async.when(
-        data: (runs) => Column(
-          children: [
-            const _EquationBuilderBanner(),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-              child: Row(
-                children: [
-                  Text('정렬:', style: Theme.of(context).textTheme.bodySmall),
-                  const SizedBox(width: 8),
-                  for (final s in RunSortBy.values) ...[
-                    ChoiceChip(
-                      label: Text(switch (s) {
-                        RunSortBy.date => '최신',
-                        RunSortBy.cagr => 'CAGR',
-                        RunSortBy.sharpe => 'Sharpe',
-                        RunSortBy.mdd => 'MDD',
-                        RunSortBy.winRate => '승률',
-                      }),
-                      selected: sortBy == s,
-                      onSelected: (_) =>
-                          ref.read(runSortByProvider.notifier).state = s,
-                    ),
-                    const SizedBox(width: 4),
+        data: (runs) {
+          // Distinct model names (backend `strategy` field) across every
+          // fetched run — drives the filter chip row. Only worth showing
+          // when there's more than one model to tell apart.
+          final models = {for (final r in runs) r.strategy}.toList()..sort();
+          final showModelFilter = models.length > 1;
+          final filtered = modelFilter == null
+              ? runs
+              : runs.where((r) => r.strategy == modelFilter).toList();
+          final groupByModel = showModelFilter && modelFilter == null;
+          final items = _buildRunListItems(filtered, groupByModel: groupByModel);
+
+          return Column(
+            children: [
+              const _EquationBuilderBanner(),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                child: Row(
+                  children: [
+                    Text('정렬:', style: Theme.of(context).textTheme.bodySmall),
+                    const SizedBox(width: 8),
+                    for (final s in RunSortBy.values) ...[
+                      ChoiceChip(
+                        label: Text(switch (s) {
+                          RunSortBy.date => '최신',
+                          RunSortBy.cagr => 'CAGR',
+                          RunSortBy.sharpe => 'Sharpe',
+                          RunSortBy.mdd => 'MDD',
+                          RunSortBy.winRate => '승률',
+                        }),
+                        selected: sortBy == s,
+                        onSelected: (_) =>
+                            ref.read(runSortByProvider.notifier).state = s,
+                      ),
+                      const SizedBox(width: 4),
+                    ],
                   ],
-                ],
+                ),
               ),
-            ),
-            const Divider(height: 1),
-            Expanded(
-              child: runs.isEmpty
-                  ? const EmptyState(
-                      icon: Icons.science_outlined,
-                      title: '저장된 백테스트 결과가 없습니다',
-                      subtitle: '먼저 research/ CLI 또는 (Phase 6 이후) 방정식 빌더로 백테스트를 실행하세요.',
-                    )
-                  : ListView.separated(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      itemCount: runs.length,
-                      separatorBuilder: (_, __) => const Divider(height: 1),
-                      itemBuilder: (_, i) => _RunRow(run: runs[i]),
+              if (showModelFilter)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        Text('모델:', style: Theme.of(context).textTheme.bodySmall),
+                        const SizedBox(width: 8),
+                        ChoiceChip(
+                          label: const Text('전체'),
+                          selected: modelFilter == null,
+                          onSelected: (_) =>
+                              ref.read(runModelFilterProvider.notifier).state = null,
+                        ),
+                        const SizedBox(width: 4),
+                        for (final m in models) ...[
+                          ChoiceChip(
+                            label: Text(m),
+                            selected: modelFilter == m,
+                            onSelected: (_) =>
+                                ref.read(runModelFilterProvider.notifier).state = m,
+                          ),
+                          const SizedBox(width: 4),
+                        ],
+                      ],
                     ),
-            ),
-          ],
-        ),
+                  ),
+                ),
+              const Divider(height: 1),
+              Expanded(
+                child: runs.isEmpty
+                    ? const EmptyState(
+                        icon: Icons.science_outlined,
+                        title: '저장된 백테스트 결과가 없습니다',
+                        subtitle: '먼저 research/ CLI 또는 (Phase 6 이후) 방정식 빌더로 백테스트를 실행하세요.',
+                      )
+                    : filtered.isEmpty
+                        ? const EmptyState(
+                            icon: Icons.filter_alt_off_outlined,
+                            title: '해당 모델의 결과가 없습니다',
+                            subtitle: '다른 모델을 선택하거나 전체 보기로 전환하세요.',
+                          )
+                        : ListView.builder(
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            itemCount: items.length,
+                            itemBuilder: (_, i) {
+                              final item = items[i];
+                              if (item.header != null) {
+                                return _ModelSectionHeader(model: item.header!);
+                              }
+                              final isLast = i == items.length - 1;
+                              final nextIsHeader =
+                                  !isLast && items[i + 1].header != null;
+                              return Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  _RunRow(run: item.run!),
+                                  if (!isLast && !nextIsHeader)
+                                    const Divider(height: 1),
+                                ],
+                              );
+                            },
+                          ),
+              ),
+            ],
+          );
+        },
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, _) => Center(
           child: Padding(
@@ -115,6 +180,80 @@ class BacktestLabScreen extends ConsumerWidget {
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// One entry in the runs list: either a model section header or a run row.
+class _RunListItem {
+  const _RunListItem.header(String model)
+      : header = model,
+        run = null;
+  const _RunListItem.row(BacktestRunSummary r)
+      : header = null,
+        run = r;
+  final String? header;
+  final BacktestRunSummary? run;
+}
+
+/// Groups [runs] into header+row items — one header per distinct
+/// `strategy` (model), ordered by that model's most recent run (`run_id`
+/// desc, since it encodes `YYYYMMDD_HHMMSS`) so the most-recently-tested
+/// model floats to the top. Each group's internal order is preserved from
+/// the incoming (already-sorted) list, so whichever sort the user picked
+/// (최신/CAGR/Sharpe/MDD/승률) still applies within a model's section.
+///
+/// When [groupByModel] is false — a single model is already isolated via
+/// the filter chips, or there's only one model total — every run is
+/// wrapped as a flat row with no headers, since a single-item grouping
+/// would be redundant.
+List<_RunListItem> _buildRunListItems(
+  List<BacktestRunSummary> runs, {
+  required bool groupByModel,
+}) {
+  if (!groupByModel) {
+    return [for (final r in runs) _RunListItem.row(r)];
+  }
+  final byModel = <String, List<BacktestRunSummary>>{};
+  for (final r in runs) {
+    byModel.putIfAbsent(r.strategy, () => []).add(r);
+  }
+  final modelsByRecency = byModel.keys.toList()
+    ..sort((a, b) {
+      final aLatest =
+          byModel[a]!.map((r) => r.runId).reduce((x, y) => x.compareTo(y) >= 0 ? x : y);
+      final bLatest =
+          byModel[b]!.map((r) => r.runId).reduce((x, y) => x.compareTo(y) >= 0 ? x : y);
+      return bLatest.compareTo(aLatest);
+    });
+  final items = <_RunListItem>[];
+  for (final m in modelsByRecency) {
+    items.add(_RunListItem.header(m));
+    for (final r in byModel[m]!) {
+      items.add(_RunListItem.row(r));
+    }
+  }
+  return items;
+}
+
+class _ModelSectionHeader extends StatelessWidget {
+  const _ModelSectionHeader({required this.model});
+  final String model;
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      width: double.infinity,
+      color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Text(
+        model,
+        style: theme.textTheme.labelLarge?.copyWith(
+          fontWeight: FontWeight.w800,
+          color: theme.colorScheme.primary,
+          letterSpacing: 0.2,
         ),
       ),
     );
@@ -174,6 +313,7 @@ class _RunRow extends ConsumerWidget {
     final cagrPct = run.cagr * 100;
     final mddPct = run.mdd * 100;
     final winPct = run.winRate * 100;
+    final runTs = runTimestampFromId(run.runId);
     return InkWell(
       onTap: () => context.go('/quant/backtest/runs/${run.runId}'),
       child: Padding(
@@ -205,6 +345,15 @@ class _RunRow extends ConsumerWidget {
               ],
             ),
             const SizedBox(height: 6),
+            if (runTs != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(
+                  '시행 ${_runTs.format(runTs)}',
+                  style: theme.textTheme.labelSmall
+                      ?.copyWith(color: theme.colorScheme.outline),
+                ),
+              ),
             Text(
               '${_date.format(run.startDate)} → ${_date.format(run.endDate)} · '
               '${run.rebalanceFreq} · top_${run.topN} · ${run.nTrades} trades',

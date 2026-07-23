@@ -328,13 +328,31 @@ String _formatNav(double v) {
 // for fresh runs from the builder — not persisted).
 // ---------------------------------------------------------------------------
 
-class _TradesCard extends StatelessWidget {
+enum _TradeSideFilter { all, buy, sell }
+
+class _TradesCard extends StatefulWidget {
   const _TradesCard({required this.trades});
   final List<TradeRecord> trades;
+
+  @override
+  State<_TradesCard> createState() => _TradesCardState();
+}
+
+class _TradesCardState extends State<_TradesCard> {
+  _TradeSideFilter _filter = _TradeSideFilter.all;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final fmt = DateFormat('yyyy-MM-dd');
+    final trades = widget.trades;
+    final filtered = switch (_filter) {
+      _TradeSideFilter.all => trades,
+      _TradeSideFilter.buy =>
+        trades.where((t) => t.side.toUpperCase() == 'BUY').toList(),
+      _TradeSideFilter.sell =>
+        trades.where((t) => t.side.toUpperCase() == 'SELL').toList(),
+    };
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -343,6 +361,33 @@ class _TradesCard extends StatelessWidget {
           children: [
             Text('🔁 체결 내역  (${trades.length})',
                 style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+            if (trades.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 6,
+                runSpacing: 4,
+                children: [
+                  ChoiceChip(
+                    label: const Text('전체'),
+                    selected: _filter == _TradeSideFilter.all,
+                    onSelected: (_) =>
+                        setState(() => _filter = _TradeSideFilter.all),
+                  ),
+                  ChoiceChip(
+                    label: const Text('매수'),
+                    selected: _filter == _TradeSideFilter.buy,
+                    onSelected: (_) =>
+                        setState(() => _filter = _TradeSideFilter.buy),
+                  ),
+                  ChoiceChip(
+                    label: const Text('매도'),
+                    selected: _filter == _TradeSideFilter.sell,
+                    onSelected: (_) =>
+                        setState(() => _filter = _TradeSideFilter.sell),
+                  ),
+                ],
+              ),
+            ],
             const SizedBox(height: 8),
             if (trades.isEmpty)
               Padding(
@@ -352,17 +397,25 @@ class _TradesCard extends StatelessWidget {
                   style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline),
                 ),
               )
+            else if (filtered.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Text(
+                  '해당 조건에 맞는 체결이 없습니다.',
+                  style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline),
+                ),
+              )
             else
               SizedBox(
-                height: 240,
+                height: 480,
                 child: ListView.separated(
-                  itemCount: trades.length,
+                  itemCount: filtered.length,
                   separatorBuilder: (_, __) => Divider(
                     height: 1,
                     color: theme.colorScheme.outlineVariant.withValues(alpha: 0.5),
                   ),
                   itemBuilder: (_, i) {
-                    final t = trades[i];
+                    final t = filtered[i];
                     final isBuy = t.side.toUpperCase() == 'BUY';
                     final color = isBuy ? Colors.redAccent : Colors.blueAccent;
                     return Padding(

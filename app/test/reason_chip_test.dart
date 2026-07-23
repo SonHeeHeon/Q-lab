@@ -108,6 +108,59 @@ void main() {
       final d = ReasonChip.detailFor({'rule': 'STOP_LOSS', 'return': '-0.12'});
       expect(d, '손절 · -12.0%');
     });
+
+    // -- SCORE_EXIT (new contract): percentile/score/weakest_group --------
+
+    test('SCORE_EXIT (new contract) shows percentile, score, and weakest_group', () {
+      final d = ReasonChip.detailFor({
+        'rule': 'SCORE_EXIT',
+        'replaced_by': '000660',
+        'percentile': 0.31,
+        'score': 0.42,
+        'weakest_group': 'Value',
+      });
+      expect(d, '점수 이탈 · 백분위 31% · 점수 0.42 · Value 약화');
+    });
+
+    test('SCORE_EXIT (new contract) without weakest_group omits that segment', () {
+      final d = ReasonChip.detailFor({
+        'rule': 'SCORE_EXIT',
+        'percentile': 0.5,
+        'score': 0.1,
+      });
+      expect(d, '점수 이탈 · 백분위 50% · 점수 0.10');
+    });
+
+    test('SCORE_EXIT falls back to replaced_by when percentile/score absent', () {
+      final d = ReasonChip.detailFor(
+          {'rule': 'SCORE_EXIT', 'replaced_by': '000660'});
+      expect(d, '점수 이탈 → 000660');
+    });
+
+    test('SCORE_EXIT falls back to the bare label when no known extra keys are present (old runs)', () {
+      expect(ReasonChip.detailFor({'rule': 'SCORE_EXIT'}), '점수 이탈');
+    });
+
+    // -- REBALANCE_OUT (new contract): rank/score/weakest_group -----------
+
+    test('REBALANCE_OUT (new contract) shows rank, score, and weakest_group', () {
+      final d = ReasonChip.detailFor({
+        'rule': 'REBALANCE_OUT',
+        'rank': 45,
+        'score': 0.30,
+        'weakest_group': 'Value',
+      });
+      expect(d, '리밸런스 제외 · 순위 45 · 점수 0.30 · Value 약화');
+    });
+
+    test('REBALANCE_OUT (new contract) without weakest_group omits that segment', () {
+      final d = ReasonChip.detailFor({'rule': 'REBALANCE_OUT', 'rank': 12});
+      expect(d, '리밸런스 제외 · 순위 12');
+    });
+
+    test('REBALANCE_OUT falls back to the bare label when rank/score/weakest_group are absent (old runs)', () {
+      expect(ReasonChip.detailFor({'rule': 'REBALANCE_OUT'}), '리밸런스 제외');
+    });
   });
 
   group('ReasonChip.colorFor', () {

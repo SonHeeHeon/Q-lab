@@ -83,7 +83,35 @@ class ReasonChip extends StatelessWidget {
         final th =
             safeDoubleOrNull(reason['threshold'], hint: 'reason.threshold');
         return th == null ? label : '$label · 임계 ${_pct(th)}';
+      case 'REBALANCE_OUT':
+        final outRank =
+            safeDoubleOrNull(reason['rank'], hint: 'reason.rank')?.round();
+        final outScore =
+            safeDoubleOrNull(reason['score'], hint: 'reason.score');
+        var outS = label;
+        if (outRank != null) outS += ' · 순위 $outRank';
+        if (outScore != null) outS += ' · 점수 ${outScore.toStringAsFixed(2)}';
+        final outWeakest = reason['weakest_group']?.toString();
+        if (outWeakest != null && outWeakest.isNotEmpty) {
+          outS += ' · $outWeakest 약화';
+        }
+        return outS;
       case 'SCORE_EXIT':
+        // New contract: percentile/score (+ optional weakest_group) take
+        // priority when present. Older persisted runs only carry
+        // `replaced_by` — keep that rendering as the fallback so historical
+        // runs (predating this enrichment) still render sensibly.
+        final percentile =
+            safeDoubleOrNull(reason['percentile'], hint: 'reason.percentile');
+        final score = safeDoubleOrNull(reason['score'], hint: 'reason.score');
+        if (percentile != null || score != null) {
+          var s = label;
+          if (percentile != null) s += ' · 백분위 ${_pctInt(percentile)}%';
+          if (score != null) s += ' · 점수 ${score.toStringAsFixed(2)}';
+          final weakest = reason['weakest_group']?.toString();
+          if (weakest != null && weakest.isNotEmpty) s += ' · $weakest 약화';
+          return s;
+        }
         final by = reason['replaced_by']?.toString();
         return (by == null || by.isEmpty) ? label : '$label → $by';
       case 'SCORE_EXIT_REPLACE':
