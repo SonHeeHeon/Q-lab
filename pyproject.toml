@@ -43,6 +43,9 @@ dependencies = [
     "pyyaml",
     "scikit-learn",
     "seaborn",
+    # pykrx imports the legacy `pkg_resources`, which setuptools removed in 81+.
+    # Pin below 81 so `from pykrx import stock` keeps working (KR data sync).
+    "setuptools<81",
     "sqlalchemy>=2.0",
     "tqdm",
     "uvicorn[standard]",
