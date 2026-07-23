@@ -94,6 +94,48 @@ def test_grouped_path_routes_through_composite(research_db: Path) -> None:
     assert set(order) == {"000001", "000002", "000003", "000004"}
 
 
+def test_grouped_path_attaches_weakest_group(research_db: Path) -> None:
+    """The grouped scorer names each stock's weakest (lowest-scoring) group so
+    sell reasons can say *which factor weakened* — point-in-time, no LLM."""
+    groups = [
+        FactorGroup(
+            name="Value",
+            weight=0.5,
+            factors=[GroupFactor(factor="PER", higher_is_better=False)],
+        ),
+        FactorGroup(
+            name="Quality",
+            weight=0.5,
+            factors=[GroupFactor(factor="ROE", higher_is_better=True)],
+        ),
+    ]
+    scored = score_stocks(
+        ["000001", "000002", "000003", "000004"],
+        [],
+        as_of=AS_OF,
+        db_path=research_db,
+        groups=groups,
+        min_groups=2,
+    )
+    assert "weakest_group" in scored.columns
+    assert set(scored["weakest_group"]).issubset({"Value", "Quality"})
+    # 000002 is cheap but low-ROE → Quality is its weak group.
+    assert scored.loc["000002", "weakest_group"] == "Quality"
+    # 000003 is high-ROE but pricey → Value is its weak group.
+    assert scored.loc["000003", "weakest_group"] == "Value"
+
+
+def test_flat_path_has_no_weakest_group(research_db: Path) -> None:
+    """Flat-factor strategies must not fabricate a weakest_group column."""
+    scored = score_stocks(
+        ["000001", "000002"],
+        [FactorWeight(factor="ROE", weight=1.0, transform="ZSCORE")],
+        as_of=AS_OF,
+        db_path=research_db,
+    )
+    assert "weakest_group" not in scored.columns
+
+
 def test_grouped_min_groups_excludes_incomplete(research_db: Path) -> None:
     # Require 3 groups but only 2 exist → everyone dropped (score NaN).
     groups = [

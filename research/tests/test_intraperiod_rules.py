@@ -75,7 +75,8 @@ def test_score_exit_swaps_percentile_and_bench():
     held = {"A", "B"}
     swaps = _score_exit_swaps(ranked, held, rank_below=0.4)
     # A pct=0.5 stays; B pct=0.0 exits → best non-held C replaces it.
-    assert swaps == [("B", "C")]
+    # The breaching percentile is threaded out alongside (exit, replacement).
+    assert swaps == [("B", "C", 0.0)]
 
 
 def test_score_exit_skips_names_missing_from_ranking():
@@ -299,5 +300,140 @@ def test_score_exit_reason_links_exit_and_replacement(monkeypatch, patched):
         t for t in result.trades if t.side == "BUY" and t.code == "000003"
         and t.date == date(2026, 2, 2)
     )
-    assert exit_sell.reason == {"rule": "SCORE_EXIT", "replaced_by": "000003"}
+    # SCORE_EXIT now records *why*: the breaching percentile and the holding's
+    # current composite score (no weakest_group — this fixture is flat-factor).
+    # later frame: 000003(3.0) 000001(2.0) 000002(0.1); n=3, held={000002,000001}.
+    # 000002 is bottom → percentile 0.0 < 0.4 → exits, score 0.1.
+    assert exit_sell.reason == {
+        "rule": "SCORE_EXIT",
+        "replaced_by": "000003",
+        "percentile": 0.0,
+        "score": 0.1,
+    }
     assert repl_buy.reason == {"rule": "SCORE_EXIT_REPLACE", "replaces": "000002"}
+
+
+def test_score_exit_reason_includes_weakest_group_when_grouped(monkeypatch, patched):
+    """Grouped strategies carry a per-code ``weakest_group`` column on the
+    scored frame; the SCORE_EXIT reason must surface it (the "which factor
+    weakened" headline) alongside percentile+score."""
+    db, _days = patched
+    wk = "weakest_group"
+    frames = {
+        "initial": pd.DataFrame(
+            {"score": [2.0, 1.0], wk: ["Quality", "Value"]},
+            index=pd.Index(["000002", "000001"], name="code"),
+        ),
+        "later": pd.DataFrame(
+            {"score": [3.0, 2.0, 0.1], wk: ["Momentum", "Quality", "Value"]},
+            index=pd.Index(["000003", "000001", "000002"], name="code"),
+        ),
+    }
+    calls = {"n": 0}
+
+    def fake_scores(*a, **k):
+        calls["n"] += 1
+        return (frames["initial"] if calls["n"] == 1 else frames["later"]).copy()
+
+    monkeypatch.setattr(eng, "score_stocks", fake_scores)
+    with sqlite3.connect(db) as conn:
+        for d in _weekdays(date(2026, 1, 2), date(2026, 3, 31)):
+            conn.execute(
+                "INSERT INTO prices_daily VALUES ('000003', ?, 200.0, NULL)",
+                (d.isoformat(),),
+            )
+    result = eng.run_backtest(_strategy(replace_if_rank_below=0.4), db_path=db)
+    exit_sell = next(
+        t for t in result.trades if t.side == "SELL" and t.code == "000002"
+        and t.date == date(2026, 2, 2)
+    )
+    assert exit_sell.reason == {
+        "rule": "SCORE_EXIT",
+        "replaced_by": "000003",
+        "percentile": 0.0,
+        "score": 0.1,
+        "weakest_group": "Value",
+    }
+
+
+def _monthly_two_stock_db(tmp_path: Path) -> tuple[Path, list[date]]:
+    """Two flat-priced names present every weekday Jan–Feb — a MONTHLY-rebalance
+    scenario where the Feb rebalance re-selects and drops a holding."""
+    db = tmp_path / "research.db"
+    days = _weekdays(date(2026, 1, 2), date(2026, 2, 27))
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE prices_daily (stock_code TEXT, date TEXT, close REAL, adj_close REAL)"
+        )
+        for d in days:
+            conn.execute(
+                "INSERT INTO prices_daily VALUES ('000001', ?, 100.0, NULL)",
+                (d.isoformat(),),
+            )
+            conn.execute(
+                "INSERT INTO prices_daily VALUES ('000002', ?, 100.0, NULL)",
+                (d.isoformat(),),
+            )
+    return db, days
+
+
+def test_rebalance_out_reason_carries_rank_and_score(monkeypatch, tmp_path):
+    """A holding dropped at a rebalance is tagged REBALANCE_OUT with its rank
+    (1-based, full ranking) and composite score in the just-computed frame."""
+    db, _days = _monthly_two_stock_db(tmp_path)
+    monkeypatch.setattr(eng, "get_universe", lambda *a, **k: ["000001", "000002"])
+    monkeypatch.setattr(eng, "apply_filters", lambda frame, *a, **k: frame)
+    frames = {
+        # Jan: 000001 tops → held. Feb: 000002 tops → 000001 drops to rank 2.
+        "jan": pd.DataFrame(
+            {"score": [2.0, 1.0]},
+            index=pd.Index(["000001", "000002"], name="code"),
+        ),
+        "feb": pd.DataFrame(
+            {"score": [2.0, 1.0]},
+            index=pd.Index(["000002", "000001"], name="code"),
+        ),
+    }
+    calls = {"n": 0}
+
+    def fake_scores(*a, **k):
+        calls["n"] += 1
+        return (frames["jan"] if calls["n"] == 1 else frames["feb"]).copy()
+
+    monkeypatch.setattr(eng, "score_stocks", fake_scores)
+    result = eng.run_backtest(
+        _strategy(rebalance_freq="MONTHLY", top_n=1), db_path=db
+    )
+    drop = next(t for t in result.trades if t.side == "SELL" and t.code == "000001")
+    # 000001 is rank 2 (below 000002) in the Feb frame; score 1.0.
+    assert drop.reason == {"rule": "REBALANCE_OUT", "rank": 2, "score": 1.0}
+
+
+def test_rebalance_out_reason_omits_rank_when_dropped_code_absent(monkeypatch, tmp_path):
+    """A dropped holding missing from the new scored frame (delisted/filtered
+    out) yields a bare REBALANCE_OUT — rank/score omitted, not fabricated."""
+    db, _days = _monthly_two_stock_db(tmp_path)
+    monkeypatch.setattr(eng, "get_universe", lambda *a, **k: ["000001", "000002"])
+    monkeypatch.setattr(eng, "apply_filters", lambda frame, *a, **k: frame)
+    frames = {
+        "jan": pd.DataFrame(
+            {"score": [2.0, 1.0]},
+            index=pd.Index(["000001", "000002"], name="code"),
+        ),
+        # Feb: 000001 no longer in the frame at all.
+        "feb": pd.DataFrame(
+            {"score": [2.0]}, index=pd.Index(["000002"], name="code")
+        ),
+    }
+    calls = {"n": 0}
+
+    def fake_scores(*a, **k):
+        calls["n"] += 1
+        return (frames["jan"] if calls["n"] == 1 else frames["feb"]).copy()
+
+    monkeypatch.setattr(eng, "score_stocks", fake_scores)
+    result = eng.run_backtest(
+        _strategy(rebalance_freq="MONTHLY", top_n=1), db_path=db
+    )
+    drop = next(t for t in result.trades if t.side == "SELL" and t.code == "000001")
+    assert drop.reason == {"rule": "REBALANCE_OUT"}

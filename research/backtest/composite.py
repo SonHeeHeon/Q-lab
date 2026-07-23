@@ -93,6 +93,63 @@ def group_score(
     return stacked.mean(axis=1)  # skipna: mean over the factors present per stock
 
 
+def group_score_frame(
+    frame: pd.DataFrame,
+    groups: tuple[GroupSpec, ...],
+    *,
+    winsor_pct: float = 0.01,
+    clip_z: float = 3.0,
+) -> pd.DataFrame:
+    """Per-group scores (one column per ``GroupSpec.name``) before weighting.
+
+    Column g, row i = ``group_score`` of group g for stock i (NaN when the
+    stock has no data for any factor in that group). This is the per-group
+    breakdown that ``composite_score`` collapses into one number; exposing it
+    lets a caller name a stock's weakest (lowest-scoring) group.
+    """
+    return pd.DataFrame(
+        {
+            spec.name: group_score(
+                frame, spec.factors, winsor_pct=winsor_pct, clip_z=clip_z
+            )
+            for spec in groups
+        },
+        index=frame.index,
+    )
+
+
+def composite_from_groups(
+    group_frame: pd.DataFrame,
+    groups: tuple[GroupSpec, ...],
+    *,
+    min_groups: int = 5,
+) -> pd.Series:
+    """Collapse a per-group score frame (``group_score_frame``) into the final
+    composite score.
+
+    Split out of ``composite_score`` so a caller that also needs the per-group
+    breakdown reuses the same group scores instead of recomputing them.
+
+    S(i) = [ Σ_{g∈avail} w_g·G_g(i) / Σ_{g∈avail} w_g ] × sqrt(|avail| / n_groups),
+    with S(i)=NaN when |avail(i)| < ``min_groups``.
+    """
+    if not groups or group_frame.shape[1] == 0:
+        return pd.Series(np.nan, index=group_frame.index, dtype="float64")
+
+    weights = pd.Series({spec.name: float(spec.weight) for spec in groups})
+
+    present = group_frame.notna()
+    avail_count = present.sum(axis=1)
+    avail_weight = present.mul(weights, axis=1).sum(axis=1)
+    weighted_sum = group_frame.mul(weights, axis=1).sum(axis=1, min_count=1)
+
+    base = weighted_sum / avail_weight.replace(0.0, np.nan)
+    coverage_penalty = np.sqrt(avail_count / float(len(groups)))
+    score = base * coverage_penalty
+    score[avail_count < min_groups] = np.nan
+    return score
+
+
 def composite_score(
     frame: pd.DataFrame,
     groups: tuple[GroupSpec, ...],
@@ -109,22 +166,5 @@ def composite_score(
     if not groups:
         return pd.Series(np.nan, index=frame.index, dtype="float64")
 
-    scores = {
-        spec.name: group_score(
-            frame, spec.factors, winsor_pct=winsor_pct, clip_z=clip_z
-        )
-        for spec in groups
-    }
-    gdf = pd.DataFrame(scores, index=frame.index)
-    weights = pd.Series({spec.name: float(spec.weight) for spec in groups})
-
-    present = gdf.notna()
-    avail_count = present.sum(axis=1)
-    avail_weight = present.mul(weights, axis=1).sum(axis=1)
-    weighted_sum = gdf.mul(weights, axis=1).sum(axis=1, min_count=1)
-
-    base = weighted_sum / avail_weight.replace(0.0, np.nan)
-    coverage_penalty = np.sqrt(avail_count / float(len(groups)))
-    score = base * coverage_penalty
-    score[avail_count < min_groups] = np.nan
-    return score
+    gdf = group_score_frame(frame, groups, winsor_pct=winsor_pct, clip_z=clip_z)
+    return composite_from_groups(gdf, groups, min_groups=min_groups)

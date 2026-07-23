@@ -43,7 +43,8 @@ from shared.db.session import research_db_path
 from research.backtest.composite import (
     GroupFactorSpec,
     GroupSpec,
-    composite_score,
+    composite_from_groups,
+    group_score_frame,
 )
 from research.backtest.macro_data import load_regime_series
 from research.backtest.regime import compute_regime
@@ -361,13 +362,22 @@ def run_backtest(
             if swaps:
                 swap_target = dict(positions)
                 swap_reason: dict[str, dict] = {}
-                for exit_code, replacement in swaps:
+                for exit_code, replacement, percentile in swaps:
                     exit_qty = swap_target.pop(exit_code, 0)
                     exit_price = last_prices.get(exit_code)
-                    swap_reason[exit_code] = {
+                    exit_score, exit_group = _scored_score_and_group(
+                        scored, exit_code
+                    )
+                    reason: dict = {
                         "rule": "SCORE_EXIT",
                         "replaced_by": replacement,
+                        "percentile": round(percentile, 4),
                     }
+                    if exit_score is not None:
+                        reason["score"] = exit_score
+                    if exit_group is not None:
+                        reason["weakest_group"] = exit_group
+                    swap_reason[exit_code] = reason
                     _warn(
                         warnings,
                         f"{current_day} rule=SCORE_EXIT {exit_code}→{replacement}",
@@ -449,8 +459,19 @@ def run_backtest(
                 for i, code in enumerate(selected)
                 if code in scored.index
             }
+            # Full ranking (not just top-N): a dropped holding may sit below the
+            # cut yet still be in the frame. scored is sorted, so rank = pos+1.
+            out_rank_by_code = {
+                code: (i + 1, *_scored_score_and_group(scored, code))
+                for i, code in enumerate(scored.index)
+            }
 
-            def _rebalance_reason(trade, ranks=rank_by_code, label=regime_label):
+            def _rebalance_reason(
+                trade,
+                ranks=rank_by_code,
+                outs=out_rank_by_code,
+                label=regime_label,
+            ):
                 if trade.side == "BUY":
                     entry = ranks.get(trade.code)
                     reason: dict = {"rule": "REBALANCE_IN"}
@@ -461,7 +482,15 @@ def run_backtest(
                     if label is not None:
                         reason["regime"] = label
                     return reason
-                return {"rule": "REBALANCE_OUT"}
+                reason = {"rule": "REBALANCE_OUT"}
+                dropped = outs.get(trade.code)
+                if dropped is not None:
+                    reason["rank"] = dropped[0]
+                    if dropped[1] is not None:
+                        reason["score"] = dropped[1]
+                    if dropped[2] is not None:
+                        reason["weakest_group"] = dropped[2]
+                return reason
 
             if strategy.execution_lag_days > 0:
                 # Signal today, fill at a later close — removes the
@@ -666,13 +695,18 @@ def _score_stocks_grouped(
         )
         for group in groups
     )
-    frame["score"] = composite_score(
-        frame,
-        group_specs,
-        min_groups=min_groups,
-        winsor_pct=winsor_pct,
-        clip_z=clip_z,
+    gdf = group_score_frame(
+        frame, group_specs, winsor_pct=winsor_pct, clip_z=clip_z
     )
+    frame["score"] = composite_from_groups(
+        gdf, group_specs, min_groups=min_groups
+    )
+    # Point-in-time weakest (lowest-scoring) group per stock, for sell reasons.
+    # Only scored rows are named; they always have ≥1 available group (else
+    # score is NaN), so idxmin never hits an all-NaN row.
+    valid = frame["score"].notna()
+    if valid.any():
+        frame.loc[valid, "weakest_group"] = gdf.loc[valid].idxmin(axis=1)
     frame = frame.dropna(subset=["score"])
     return frame.sort_values("score", ascending=False)
 
@@ -958,13 +992,14 @@ def _score_exit_swaps(
     ranked_codes: list[str],
     held: set[str],
     rank_below: float,
-) -> list[tuple[str, str | None]]:
-    """(exit, replacement) pairs for held names whose score percentile
-    (1.0 = best) fell below ``rank_below``.
+) -> list[tuple[str, str | None, float]]:
+    """(exit, replacement, percentile) triples for held names whose score
+    percentile (1.0 = best) fell below ``rank_below``.
 
     Held names absent from the ranking (no data that day) are left alone —
     a data gap must not force a sale. Replacements are the best-ranked
-    non-held names, one per exit, None when the bench runs dry.
+    non-held names, one per exit, None when the bench runs dry. The breaching
+    percentile is returned so the sell reason can record *why* it exited.
     """
     n = len(ranked_codes)
     if n < 2 or not held:
@@ -978,9 +1013,33 @@ def _score_exit_swaps(
     ]
     bench = [code for code in ranked_codes if code not in held]
     return [
-        (exit_code, bench[i] if i < len(bench) else None)
+        (exit_code, bench[i] if i < len(bench) else None, percentile[exit_code])
         for i, exit_code in enumerate(exits)
     ]
+
+
+def _scored_score_and_group(
+    scored: pd.DataFrame, code: str
+) -> tuple[float | None, str | None]:
+    """(composite score rounded 4dp, weakest-group name) for ``code`` in a
+    scored frame. Each element is None when unavailable — the code is absent
+    (delisted/filtered out), the ``score`` column is missing, or the strategy
+    is flat-factor (no ``weakest_group`` column). Lets sell reasons record the
+    holding's score and which factor group weakened without fabricating data.
+    """
+    if code not in scored.index:
+        return None, None
+    score: float | None = None
+    if "score" in scored.columns:
+        raw = scored.loc[code, "score"]
+        if pd.notna(raw):
+            score = round(float(raw), 4)
+    group: str | None = None
+    if "weakest_group" in scored.columns:
+        weakest = scored.loc[code, "weakest_group"]
+        if isinstance(weakest, str) and weakest:
+            group = weakest
+    return score, group
 
 
 def _confirmed_regime_exposure(

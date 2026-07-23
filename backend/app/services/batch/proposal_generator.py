@@ -122,7 +122,7 @@ def build_rule_proposals(
 
     if strategy.replace_if_rank_below is not None and ranked_codes:
         held = {c for c in positions if c not in exiting}
-        for exit_code, replacement in _score_exit_swaps(
+        for exit_code, replacement, percentile in _score_exit_swaps(
             ranked_codes, held, strategy.replace_if_rank_below
         ):
             qty = positions.get(exit_code, 0)
@@ -133,7 +133,8 @@ def build_rule_proposals(
             drafts.append(
                 ProposalDraft(
                     exit_code, "SELL", qty, price,
-                    {"rule": "SCORE_EXIT", "replacement": replacement},
+                    {"rule": "SCORE_EXIT", "replacement": replacement,
+                     "percentile": round(percentile, 4)},
                 )
             )
             if replacement:
