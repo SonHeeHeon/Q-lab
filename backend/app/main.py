@@ -49,6 +49,7 @@ from backend.app.services.automation.safety import set_kill_switch
 from backend.app.services.automation.store import load_kill_switch
 from backend.app.ws.quotes import quote_manager, router as quotes_router
 from backend.app.ws.quotes import set_upstream_client
+from shared.db.migrate import upgrade_all
 from shared.db.session import research_engine, service_engine, service_session
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,12 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _configure_logging()
+    if settings.AUTO_MIGRATE_ON_STARTUP:
+        # Bring both DBs to head before serving so a missing new table (e.g.
+        # order_proposals) never 500s. Runs in a thread so the sync alembic
+        # call doesn't block the event loop; awaited so schema is ready first.
+        results = await asyncio.to_thread(upgrade_all)
+        logger.info("startup db migrate: %s", results)
     await _restore_kill_switch()
 
     kis_ws_client: KISWebSocketClient | None = None

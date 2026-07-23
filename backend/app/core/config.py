@@ -162,6 +162,10 @@ class Settings(BaseSettings):
     # 켜지면 가격/지수 데이터가 최신으로 따라잡도록, 시작 시 1회 run_data_sync를
     # 백그라운드로 실행한다(멱등·증분이라 반복 실행해도 안전). false면 비활성화.
     DATA_SYNC_ON_STARTUP: bool = True
+    # 시작 시 alembic 마이그레이션을 head로 자동 적용(멱등). 사용자가 수동으로
+    # `alembic upgrade head`를 안 해도 새 테이블(order_proposals 등) 누락으로
+    # 500이 나지 않도록. false면 비활성화.
+    AUTO_MIGRATE_ON_STARTUP: bool = True
     BROKER_ORDER_SYNC_CRON: str = "10 16 * * MON-FRI"
     NAV_SNAPSHOT_CRON: str = "20 16 * * MON-FRI"
     # 승인형 반자동: 제안 생성(data_sync 18:00 이후) / 미승인 제안 만료(개장 전)
