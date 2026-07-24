@@ -82,20 +82,12 @@ async def compute_rating(
             result.ratings, result.strategy_name, result.as_of
         )
 
-    rating = next((row for row in result.ratings if row.code == normalized), None)
-    if rating is None:
-        return ApiEnvelope(data=_rating_dict(normalized, "NO_DATA"), error=None)
-    return ApiEnvelope(
-        data={
-            "code": rating.code,
-            "status": rating.status,
-            "buy_grade": rating.buy_grade,
-            "score": rating.score,
-            "percentile": rating.percentile,
-            "weakest_group": rating.weakest_group,
-        },
-        error=None,
-    )
+    # 저장된 행을 그대로 반환해 GET /api/ratings 와 동일한 스키마
+    # (strategy_name/as_of/updated_at 포함)를 보장한다 — 단일 진실원.
+    stored = await store.get_stock_ratings([normalized])
+    if stored:
+        return ApiEnvelope(data=stored[0], error=None)
+    return ApiEnvelope(data=_rating_dict(normalized, "NO_DATA"), error=None)
 
 
 @router.get("/status", response_model=ApiEnvelope[dict[str, Any]])

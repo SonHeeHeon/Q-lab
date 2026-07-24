@@ -139,7 +139,10 @@ async def test_compute_kr_code_upserts_and_returns_row(monkeypatch, service_sess
     envelope = await ratings_api.compute_rating(code="005930", session=service_session)
 
     assert envelope.error is None
-    assert envelope.data == {
+    # /compute 는 저장된 DB 행을 그대로 반환한다(GET /api/ratings 와 동일 스키마):
+    # strategy_name/as_of 를 포함하며, updated_at 은 타임스탬프라 존재만 확인한다.
+    data = envelope.data
+    assert {k: data[k] for k in ("code", "status", "buy_grade", "score", "percentile", "weakest_group")} == {
         "code": "005930",
         "status": "OK",
         "buy_grade": "BUY",
@@ -147,6 +150,9 @@ async def test_compute_kr_code_upserts_and_returns_row(monkeypatch, service_sess
         "percentile": 0.7,
         "weakest_group": None,
     }
+    assert data["strategy_name"] == "ratings_api_test"
+    assert data["as_of"] == "2026-07-24"
+    assert "updated_at" in data
     spy.assert_awaited_once()
 
 
