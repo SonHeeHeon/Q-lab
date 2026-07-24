@@ -341,6 +341,69 @@ class PortfolioSnapshot(ServiceBase):
     )
 
 
+class StockRating(ServiceBase):
+    """매수축 평가 결과 — 종목당 1행(최신 평가로 upsert되는 현재 상태 테이블).
+
+    일일 평가 배치가 유니버스 전 종목을 스캔해 채점하고, 이 테이블을 종목당
+    한 행으로 갱신한다. ``status``가 'OK'가 아니면(NO_DATA/UNSUPPORTED)
+    ``buy_grade``/``score``/``percentile``은 비어 있을 수 있다.
+    """
+
+    __tablename__ = "stock_ratings"
+
+    code: Mapped[str] = mapped_column(Text, primary_key=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    buy_grade: Mapped[str | None] = mapped_column(Text)
+    score: Mapped[float | None] = mapped_column(Float)
+    percentile: Mapped[float | None] = mapped_column(Float)
+    weakest_group: Mapped[str | None] = mapped_column(Text)
+    strategy_name: Mapped[str] = mapped_column(Text, nullable=False)
+    as_of: Mapped[date] = mapped_column(Date, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
+class PositionRating(ServiceBase):
+    """매도축 평가 결과 — 계좌×종목당 1행(보유 포지션의 현재 매도 신호).
+
+    ``account_key``는 브로커별 계좌 식별자다: KIS는 ``account_type``
+    값('PAPER'/'REAL'/'ISA'), Toss는 ``'TOSS:<seq>'`` 형식을 쓴다.
+    """
+
+    __tablename__ = "position_ratings"
+
+    broker: Mapped[str] = mapped_column(Text, primary_key=True)
+    account_key: Mapped[str] = mapped_column(Text, primary_key=True)
+    code: Mapped[str] = mapped_column(Text, primary_key=True)
+    sell_grade: Mapped[str] = mapped_column(Text, nullable=False)
+    reason_json: Mapped[str] = mapped_column(Text, nullable=False)
+    pl_rate: Mapped[float | None] = mapped_column(Float)
+    entry_price: Mapped[float | None] = mapped_column(Float)
+    lane: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
+class RatingBatchRun(ServiceBase):
+    """매수/매도축 평가 배치 갱신 이력(관측성용)."""
+
+    __tablename__ = "rating_batch_runs"
+    __table_args__ = {"sqlite_autoincrement": True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    lane: Mapped[str] = mapped_column(Text, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+    universe_size: Mapped[int | None] = mapped_column(Integer)
+    stored_count: Mapped[int | None] = mapped_column(Integer)
+    error_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    detail_json: Mapped[str | None] = mapped_column(Text)
+
+
 class Stock(ResearchBase):
     __tablename__ = "stocks"
 

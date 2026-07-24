@@ -48,3 +48,30 @@ def test_upgrade_all_brings_fresh_dbs_to_head(
     # download_us_universe, so its korean_name columns aren't asserted here).
     assert research_db.exists()
     _ = _cols  # helper kept for future column assertions
+
+
+def test_upgrade_all_creates_rating_tables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """매수축/매도축 평가 테이블 + 배치 이력 테이블이 head에서 생성되는지 확인."""
+    service_db = tmp_path / "service.db"
+    research_db = tmp_path / "research.db"
+    monkeypatch.setenv("SERVICE_DB_PATH", str(service_db))
+    monkeypatch.setenv("RESEARCH_DB_PATH", str(research_db))
+
+    from shared.db.migrate import upgrade_all
+
+    results = upgrade_all()
+    assert results == {"service": "ok", "research": "ok"}
+
+    tables = _tables(service_db)
+    assert {"stock_ratings", "position_ratings", "rating_batch_runs"} <= tables
+
+    # position_ratings의 복합 PK가 (broker, account_key, code)인지 스팟체크.
+    with sqlite3.connect(service_db) as conn:
+        pk_cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(position_ratings)")
+            if row[5] > 0  # PRAGMA table_info: pk 컬럼 (0이면 PK 아님)
+        }
+    assert pk_cols == {"broker", "account_key", "code"}
