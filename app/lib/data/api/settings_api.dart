@@ -53,6 +53,7 @@ class AppSettings {
     required this.llmModel,
     required this.llmApiKeyMasked,
     required this.llmCacheTtlHours,
+    required this.ratingStrategyName,
     this.toss,
   });
 
@@ -64,6 +65,11 @@ class AppSettings {
   final String llmModel;
   final String llmApiKeyMasked;
   final int llmCacheTtlHours;
+
+  /// Strategy preset used by the ratings batch (`backend/app/services/
+  /// batch/rating_batch.py`, `Setting` key `rating_strategy_name`). Falls
+  /// back to the backend's own default (`DEFAULT_STRATEGY_NAME`).
+  final String ratingStrategyName;
   final TossSettings? toss;
 
   factory AppSettings.fromJson(Map<String, dynamic> j) => AppSettings(
@@ -78,6 +84,8 @@ class AppSettings {
         llmModel: (j['llm_model'] as String?) ?? 'gpt-4o',
         llmApiKeyMasked: (j['llm_api_key_masked'] as String?) ?? '',
         llmCacheTtlHours: (j['llm_cache_ttl_hours'] as num?)?.toInt() ?? 24,
+        ratingStrategyName:
+            (j['rating_strategy_name'] as String?) ?? 'value_v1',
         toss: j['toss'] is Map ? TossSettings.fromJson(asJsonMap(j['toss'])) : null,
       );
 }

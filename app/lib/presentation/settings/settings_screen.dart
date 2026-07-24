@@ -10,13 +10,16 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:intl/intl.dart';
 
 import '../../core/config.dart';
 import '../../core/preferences.dart';
 import '../../data/api/portfolio_api.dart';
+import '../../data/api/ratings_api.dart';
 import '../../data/api/settings_api.dart';
 import '../../domain/entities/account.dart';
 import '../portfolio/portfolio_controller.dart';
+import '../quant/builder/builder_controller.dart' show strategyPresetsProvider;
 import 'settings_controller.dart';
 
 // Toss brand teal — matches Toss Securities identity
@@ -231,6 +234,10 @@ class _SettingsBody extends ConsumerWidget {
 
         _SectionHeader('📈 유니버스'),
         const _UniverseBlock(),
+        const SizedBox(height: 24),
+
+        _SectionHeader('🏷️ 종목 등급'),
+        _RatingsSettingsBlock(settings: settings),
         const SizedBox(height: 24),
 
         _SectionHeader('🔄 거래 내역 동기화'),
@@ -1006,6 +1013,194 @@ class _OutcomeSummary extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ratings (buy/sell axis) — strategy preset + last-refresh freshness
+// ---------------------------------------------------------------------------
+
+/// `GET /api/ratings/status` — scheduler health for the freshness display
+/// below the strategy picker. Defined locally (not in `ratings_api.dart`,
+/// which T6 owns) since only this screen needs it today.
+final _ratingsStatusProvider = FutureProvider<RatingStatus>((ref) {
+  return ref.read(ratingsApiProvider).getStatus();
+});
+
+final _ratingHHmm = DateFormat('HH:mm');
+
+/// Strategy preset used to compute buy/sell-axis ratings, plus a freshness
+/// summary of the last EOD/intraday batch. Persists via the same
+/// `SettingsApi.patch` + `appSettingsProvider` invalidate flow as the
+/// Telegram/Toss blocks above (`rating_strategy_name`, PROJECT_BLUEPRINT.md
+/// §4.4 / Phase 4.6 T5).
+class _RatingsSettingsBlock extends ConsumerStatefulWidget {
+  const _RatingsSettingsBlock({required this.settings});
+  final AppSettings settings;
+
+  @override
+  ConsumerState<_RatingsSettingsBlock> createState() => _RatingsSettingsBlockState();
+}
+
+class _RatingsSettingsBlockState extends ConsumerState<_RatingsSettingsBlock> {
+  bool _saving = false;
+
+  Future<void> _onStrategyChanged(String? name) async {
+    if (name == null || name == widget.settings.ratingStrategyName) return;
+    setState(() => _saving = true);
+    try {
+      await ref.read(settingsApiProvider).patch({'rating_strategy_name': name});
+      ref.invalidate(appSettingsProvider);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('종목 등급 전략 저장 완료: $name (다음 배치부터 적용됩니다)')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('저장 실패: $e'), backgroundColor: Colors.redAccent),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final presetsAsync = ref.watch(strategyPresetsProvider);
+    final statusAsync = ref.watch(_ratingsStatusProvider);
+    final currentName = widget.settings.ratingStrategyName;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('등급 전략',
+                style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
+            const SizedBox(height: 4),
+            Text(
+              '매수/매도축 등급 계산에 쓸 전략 프리셋을 고릅니다. 🔒 표시는 비공개(private) 프리셋입니다.',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            presetsAsync.when(
+              data: (presets) {
+                final private = presets.where((p) => p.isPrivate).toList();
+                final public = presets.where((p) => !p.isPrivate).toList();
+                final ordered = [...private, ...public];
+                final names = ordered.map((p) => p.name).toSet();
+                return DropdownButtonFormField<String>(
+                  initialValue: currentName,
+                  isDense: true,
+                  decoration: const InputDecoration(labelText: '전략 프리셋', isDense: true),
+                  items: [
+                    for (final p in ordered)
+                      DropdownMenuItem<String>(
+                        value: p.name,
+                        child: Text(
+                          '${p.isGrouped ? '📐' : '🧮'} ${p.name}${p.isPrivate ? ' 🔒' : ''}',
+                          style: const TextStyle(fontSize: 13),
+                        ),
+                      ),
+                    // 방어: 저장된 전략 이름이 현재 목록에 없으면(비공개 프리셋
+                    // 삭제 등) Dropdown의 "값이 항목과 정확히 하나 일치" 단언이
+                    // 터지지 않도록 항목을 보강한다.
+                    if (currentName.isNotEmpty && !names.contains(currentName))
+                      DropdownMenuItem<String>(
+                        value: currentName,
+                        child: Text('$currentName (목록에 없음)',
+                            style: const TextStyle(fontSize: 13)),
+                      ),
+                  ],
+                  onChanged: _saving ? null : _onStrategyChanged,
+                );
+              },
+              loading: () => const Padding(
+                padding: EdgeInsets.symmetric(vertical: 12),
+                child: LinearProgressIndicator(),
+              ),
+              error: (e, _) => Text(
+                '프리셋 목록을 불러오지 못했습니다: $e',
+                style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.error),
+              ),
+            ),
+            if (_saving) ...[
+              const SizedBox(height: 8),
+              Text('저장 중...',
+                  style: theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.outline)),
+            ],
+            const Divider(height: 24),
+            statusAsync.when(
+              data: (status) => _RatingStatusSummary(status: status),
+              loading: () => const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8),
+                child: LinearProgressIndicator(),
+              ),
+              error: (e, _) => Text(
+                '갱신 상태를 불러오지 못했습니다: $e',
+                style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.error),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// "일일 등급 기준일 / 장중 갱신 / 자동 갱신" freshness summary — read from
+/// [RatingStatus] (`RatingsApi.getStatus()`). All-null fields (fresh clone,
+/// scheduler never ran) fall back to "아직 갱신 없음" rather than an empty row.
+class _RatingStatusSummary extends StatelessWidget {
+  const _RatingStatusSummary({required this.status});
+  final RatingStatus status;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final style = theme.textTheme.bodySmall;
+
+    final eod = status.eod;
+    final eodText = (eod == null || eod.asOf.isEmpty)
+        ? '일일 등급 기준일: 아직 갱신 없음'
+        : '일일 등급 기준일: ${eod.asOf}';
+
+    final intraday = status.intraday;
+    final intradayDt = (intraday == null || intraday.finishedAt.isEmpty)
+        ? null
+        : DateTime.tryParse(intraday.finishedAt)?.toLocal();
+    final intradayText = intradayDt == null
+        ? '장중 갱신: 아직 갱신 없음'
+        : '장중 갱신: ${_ratingHHmm.format(intradayDt)} 기준';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(eodText, style: style),
+        const SizedBox(height: 2),
+        Text(intradayText, style: style),
+        const SizedBox(height: 6),
+        Row(
+          children: [
+            Icon(
+              status.schedulerRunning ? Icons.check_circle : Icons.pause_circle_outline,
+              size: 14,
+              color: status.schedulerRunning ? Colors.green : theme.colorScheme.outline,
+            ),
+            const SizedBox(width: 4),
+            Text(
+              '자동 갱신: ${status.schedulerRunning ? "켜짐" : "꺼짐"}',
+              style: theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.outline),
+            ),
+          ],
+        ),
+      ],
     );
   }
 }
