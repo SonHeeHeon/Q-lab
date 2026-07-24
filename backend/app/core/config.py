@@ -112,6 +112,9 @@ class Settings(BaseSettings):
     RISK_MANAGER_ACCOUNT_TYPE: AccountType = AccountType.PAPER
     RISK_MANAGER_STOP_LOSS_PCT: float = -10.0
     RISK_MANAGER_POSITION_REFRESH_SECONDS: int = 60
+    # 매도축 등급(sell_axis) 표시용 STOP_LOSS 임계치 — RISK_MANAGER_STOP_LOSS_PCT
+    # 와 값은 같지만 리스크 매니저 자동 청산과는 독립적으로 관리한다.
+    RATING_STOP_LOSS_PCT: float = -10.0
     ALERT_MONITOR_AUTOSTART: bool = False
     ALERT_MONITOR_INTERVAL_SECONDS: int = 60
     ALERT_ORDER_IS_MOCK: bool = True
