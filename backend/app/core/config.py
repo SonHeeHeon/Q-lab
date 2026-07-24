@@ -175,6 +175,9 @@ class Settings(BaseSettings):
     PROPOSAL_CRON: str = "40 18 * * MON-FRI"
     PROPOSAL_EXPIRY_CRON: str = "30 8 * * MON-FRI"
     PROPOSAL_ACCOUNT_TYPE: AccountType = AccountType.PAPER
+    # 매수/매도축 등급 배치: Lane A(EOD, 전체 재계산) / Lane B(인트라데이, 손절 감시만)
+    RATING_EOD_CRON: str = "0 19 * * MON-FRI"
+    RATING_INTRADAY_CRON: str = "0 9-15 * * MON-FRI"
     BROKER_ORDER_SYNC_LOOKBACK_DAYS: int = 7
     BROKER_ORDER_SYNC_ACCOUNTS: str = "PAPER,REAL,ISA"
     DEFAULT_STRATEGY_NAME: str = "value_v1"

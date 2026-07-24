@@ -17,6 +17,7 @@ from backend.app.services.batch.proposal_generator import (
     run_proposal_expiry,
     run_proposal_generation,
 )
+from backend.app.services.batch.rating_batch import run_rating_eod, run_rating_intraday
 from backend.app.services.batch.record_nav_snapshot import run_nav_snapshot
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,22 @@ def create_batch_scheduler() -> AsyncIOScheduler:
         run_proposal_expiry,
         CronTrigger.from_crontab(settings.PROPOSAL_EXPIRY_CRON, timezone=timezone),
         id="proposal_expiry",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        run_rating_eod,
+        CronTrigger.from_crontab(settings.RATING_EOD_CRON, timezone=timezone),
+        id="rating_eod",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        run_rating_intraday,
+        CronTrigger.from_crontab(settings.RATING_INTRADAY_CRON, timezone=timezone),
+        id="rating_intraday",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
