@@ -102,6 +102,7 @@ class AppSettingsResponse(BaseModel):
     llm_model: str
     llm_api_key_masked: str
     llm_cache_ttl_hours: int
+    rating_strategy_name: str
     kospi200_universe: KOSPI200UniverseStatusResponse
     kosdaq150_universe: KOSPI200UniverseStatusResponse
 
@@ -133,6 +134,7 @@ async def get_settings(
             rows.get("openai_api_key") or settings.OPENAI_API_KEY.get_secret_value()
         ),
         llm_cache_ttl_hours=int(rows.get("llm_cache_ttl_hours", settings.LLM_CACHE_TTL_HOURS)),
+        rating_strategy_name=rows.get("rating_strategy_name") or settings.DEFAULT_STRATEGY_NAME,
         kospi200_universe=_kospi200_status(),
         kosdaq150_universe=_kosdaq150_status(),
     )
@@ -157,6 +159,7 @@ async def patch_settings(
         "toss_client_secret",
         "toss_account_seq",
         "toss_is_mock",
+        "rating_strategy_name",
     }
     updates = {
         key: str(value)

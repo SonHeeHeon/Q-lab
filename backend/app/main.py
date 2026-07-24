@@ -25,6 +25,7 @@ from backend.app.api.principles import router as principles_router
 from backend.app.api.proposals import router as proposals_router
 from backend.app.api.quant import router as quant_router
 from backend.app.api.quotes import router as quotes_api_router
+from backend.app.api.ratings import router as ratings_router
 from backend.app.api.settings import router as settings_router
 from backend.app.api.screener import router as screener_router
 from backend.app.api.stocks import router as stocks_router
@@ -264,6 +265,7 @@ app.include_router(principles_router)
 app.include_router(proposals_router)
 app.include_router(quant_router)
 app.include_router(quotes_api_router)
+app.include_router(ratings_router)
 app.include_router(settings_router)
 app.include_router(stocks_router)
 app.include_router(screener_router)
