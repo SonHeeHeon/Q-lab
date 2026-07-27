@@ -11,6 +11,7 @@ and is only ever evaluated out-of-sample by ``optimize_sleeve_weights_oos``.
 from __future__ import annotations
 
 import math
+import sqlite3
 from dataclasses import dataclass
 from datetime import date as Date
 from pathlib import Path
@@ -22,8 +23,10 @@ import pandas as pd
 
 from research.backtest.engine import EquityPoint, RunResult, run_backtest
 from research.backtest.metrics import Metrics, compute_metrics
+from research.backtest.simulator import _US_UNIVERSES
 from research.backtest.tax_kr import default_tax_model_for_universe
 from research.optimization.optuna_runner import _objective_value
+from shared.db.session import research_db_path
 from shared.domain.strategy import StrategyDefinition
 
 RebalanceFreq = Literal["MONTHLY", "QUARTERLY", "YEARLY"]
@@ -66,6 +69,41 @@ def _normalize_weights(weights: list[float]) -> list[float]:
     if total == 0:
         raise ValueError("weights must not sum to zero.")
     return [weight / total for weight in weights]
+
+
+def _usdkrw_index(db_path: Path | None) -> pd.Series:
+    """USDKRW 종가 시계열(Timestamp 인덱스). 없으면 빈 시리즈."""
+    path = db_path or research_db_path
+    with sqlite3.connect(path) as conn:
+        try:
+            rows = conn.execute(
+                "SELECT date, close FROM market_index"
+                " WHERE index_code = 'USDKRW' ORDER BY date"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return pd.Series(dtype="float64")
+    if not rows:
+        return pd.Series(dtype="float64")
+    return pd.Series(
+        [float(r[1]) for r in rows], index=pd.to_datetime([r[0] for r in rows])
+    ).sort_index()
+
+
+def apply_krw_view(
+    curve: pd.Series, universe: str, fx: pd.Series
+) -> pd.Series:
+    """US 유니버스의 정규화 곡선을 KRW 투자자 관점으로 환산.
+
+    US 슬리브 백테스트는 USD 기준이라, 개인(원화) 계좌 관점에선 환율 변동이
+    수익의 일부다: 곡선에 (USDKRW / 시작일 USDKRW)를 곱한다. KR 유니버스와
+    빈 입력은 그대로 통과. FX가 없는 앞구간은 드롭된다(결측 ffill)."""
+    if universe.upper() not in _US_UNIVERSES or curve.empty or fx.empty:
+        return curve
+    aligned = fx.reindex(curve.index, method="ffill").dropna()
+    if aligned.empty:
+        return curve
+    out = (curve.reindex(aligned.index) * (aligned / float(aligned.iloc[0]))).dropna()
+    return out
 
 
 def blend_curves(
@@ -136,10 +174,18 @@ def run_portfolio_backtest(
     rebalance: RebalanceFreq | None = "QUARTERLY",
     db_path: Path | None = None,
     after_tax: bool = False,
+    krw_view: bool = False,
 ) -> PortfolioResult:
-    """Run each sleeve's backtest once, then blend the curves at ``weights``."""
+    """Run each sleeve's backtest once, then blend the curves at ``weights``.
+
+    ``krw_view=True``: US 슬리브 곡선에 USDKRW 환율을 반영해 원화 계좌 관점으로
+    합성한다(개인 계좌 최적 비중 탐색용). USDKRW 데이터가 없으면 예외."""
     if not sleeves:
         raise ValueError("sleeves must not be empty.")
+
+    fx = _usdkrw_index(db_path) if krw_view else pd.Series(dtype="float64")
+    if krw_view and fx.empty:
+        raise ValueError("krw_view=True인데 market_index에 USDKRW가 없습니다.")
 
     results = [
         run_backtest(
@@ -153,6 +199,11 @@ def run_portfolio_backtest(
     ]
     norm_weights = _normalize_weights([weight for _, weight in sleeves])
     curves = [normalize_curve(result.equity_curve) for result in results]
+    if krw_view:
+        curves = [
+            apply_krw_view(curve, strategy.universe, fx)
+            for curve, (strategy, _) in zip(curves, sleeves, strict=True)
+        ]
     blended_curve = blend_curves(curves, norm_weights, rebalance=rebalance)
     combined_metrics = compute_metrics(blended_curve, [])
 
@@ -197,6 +248,7 @@ def optimize_sleeve_weights(
     trials: int = 200,
     db_path: Path | None = None,
     after_tax: bool = False,
+    krw_view: bool = False,
 ) -> dict:
     """Optuna search over the sleeve weight simplex.
 
@@ -210,6 +262,10 @@ def optimize_sleeve_weights(
         raise ValueError("trials must be positive.")
     objective = objective.lower()
 
+    fx = _usdkrw_index(db_path) if krw_view else pd.Series(dtype="float64")
+    if krw_view and fx.empty:
+        raise ValueError("krw_view=True인데 market_index에 USDKRW가 없습니다.")
+
     results = [
         run_backtest(
             strategy,
@@ -221,6 +277,11 @@ def optimize_sleeve_weights(
         for strategy in strategies
     ]
     curves = [normalize_curve(result.equity_curve) for result in results]
+    if krw_view:
+        curves = [
+            apply_krw_view(curve, strategy.universe, fx)
+            for curve, strategy in zip(curves, strategies, strict=True)
+        ]
     n = len(strategies)
 
     def objective_fn(trial: optuna.Trial) -> float:
@@ -270,6 +331,7 @@ def optimize_sleeve_weights_oos(
     trials: int = 200,
     db_path: Path | None = None,
     after_tax: bool = False,
+    krw_view: bool = False,
 ) -> dict:
     """Walk-forward OOS weight search across every sleeve.
 
@@ -324,6 +386,7 @@ def optimize_sleeve_weights_oos(
             trials=trials,
             db_path=db_path,
             after_tax=after_tax,
+            krw_view=krw_view,
         )
         weights = optimized["weights"]
 
@@ -343,6 +406,7 @@ def optimize_sleeve_weights_oos(
             rebalance=rebalance,
             db_path=db_path,
             after_tax=after_tax,
+            krw_view=krw_view,
         )
         final_nav = test_result.blended_curve[-1][1] if test_result.blended_curve else 0.0
         oos_value = _objective_score(test_result.combined_metrics, final_nav, objective)
