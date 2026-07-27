@@ -159,6 +159,9 @@ class Settings(BaseSettings):
     BATCH_SCHEDULER_AUTOSTART: bool = False
     APSCHEDULER_TIMEZONE: str = "Asia/Seoul"
     DAILY_ANALYSIS_CRON: str = "30 16 * * MON-FRI"
+    # 인사이트 4슬리브(KR주식/KR ETF/US주식/US ETF) 저평가 top10 주간 갱신 —
+    # 월요일 아침 장 전(주말 데이터 반영 후).
+    WEEKLY_INSIGHTS_CRON: str = "0 8 * * MON"
     DAILY_REPORT_CRON: str = "45 16 * * MON-FRI"
     DATA_SYNC_CRON: str = "0 18 * * MON-FRI"
     # 배치 스케줄러(BATCH_SCHEDULER_AUTOSTART)가 꺼져 있던 기간 뒤에도 서버가

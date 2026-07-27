@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sqlite3
 from dataclasses import dataclass
 from datetime import date as Date
@@ -15,6 +16,8 @@ from research.backtest.engine import apply_filters, get_universe, score_stocks
 from shared.db.models import BatchAnalysisResult
 from shared.db.session import research_db_path, service_session
 from shared.domain.strategy import StrategyDefinition
+
+logger = logging.getLogger(__name__)
 
 STRATEGY_DIR = PROJECT_ROOT / "research" / "strategies"
 # Personal tuned strategies live here and are gitignored — resolved FIRST so
@@ -36,6 +39,40 @@ class DailyAnalysisResult:
     analysis_date: Date
     strategy_name: str
     rows: list[DailyAnalysisRow]
+
+
+# 인사이트 4슬리브: (표시용 슬리브 키, 전략 이름). None = DEFAULT_STRATEGY_NAME
+# (KR 주식). 전략은 load_strategy가 private/ 튜닝판을 우선 적용하므로, 같은
+# 이름의 개인 튜닝이 있으면 자동으로 그 랭킹이 저장된다.
+SLEEVE_INSIGHT_STRATEGIES: list[tuple[str, str | None]] = [
+    ("kr_stock", None),
+    ("kr_etf", "etf_rotation_kr"),
+    ("us_stock", "us_stock_v1"),
+    ("us_etf", "etf_rotation_us"),
+]
+
+
+async def run_weekly_sleeve_insights(*, limit: int = 10) -> dict:
+    """주간 인사이트 — 4개 슬리브 전략 각각의 저평가(점수 상위) top-N을 저장.
+
+    run_daily_analysis(=BatchAnalysisResult upsert)를 전략별로 반복할 뿐이라
+    /api/quant/undervalued?strategy_name=... 조회가 그대로 동작한다. 한 슬리브
+    실패(예: US 데이터 없음)가 나머지를 막지 않는다.
+    """
+    summary: dict[str, str] = {}
+    for sleeve, strategy_name in SLEEVE_INSIGHT_STRATEGIES:
+        try:
+            result = await run_daily_analysis(
+                strategy_name=strategy_name, limit=limit
+            )
+            summary[sleeve] = (
+                f"{result.strategy_name}@{result.analysis_date} rows={len(result.rows)}"
+            )
+        except Exception as exc:  # noqa: BLE001 — 슬리브별 독립 실행
+            logger.exception("weekly insights: %s sleeve failed", sleeve)
+            summary[sleeve] = f"error: {exc}"
+    logger.info("weekly sleeve insights %s", summary)
+    return summary
 
 
 async def run_daily_analysis(
@@ -95,6 +132,12 @@ def _score_top_rows(
         as_of=as_of,
         db_path=research_db_path,
         warnings=warnings,
+        # 그룹 컴포짓 전략(etf_rotation_*, us_stock_v1, qlab_alpha_v2)은 factors가
+        # 비어 있다 — groups를 넘기지 않으면 점수가 전부 비어 rows=0이 된다.
+        groups=strategy.groups or None,
+        min_groups=strategy.min_groups,
+        winsor_pct=strategy.winsor_pct,
+        clip_z=strategy.clip_z,
     )
     scored = apply_filters(
         scored,
@@ -106,11 +149,14 @@ def _score_top_rows(
     top = scored.head(limit)
     rows: list[DailyAnalysisRow] = []
     for rank, (stock_code, row) in enumerate(top.iterrows(), start=1):
+        code = str(stock_code)
         rows.append(
             DailyAnalysisRow(
                 analysis_date=as_of,
                 strategy_name=strategy.name,
-                stock_code=str(stock_code).zfill(6),
+                # 6자리 패딩은 KR 숫자 코드 전용 — US 티커(AAPL)에 적용하면
+                # "00AAPL"로 오염된다(split_korean_and_global과 같은 규약).
+                stock_code=code.zfill(6) if code.isdigit() else code,
                 score=float(row["score"]),
                 rank=rank,
             )

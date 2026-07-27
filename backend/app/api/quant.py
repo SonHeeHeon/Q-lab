@@ -6,7 +6,7 @@ from datetime import date as Date
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
@@ -107,7 +107,7 @@ async def _stock_meta(
     if not codes:
         return {}
     result = await session.execute(select(Stock).where(Stock.code.in_(codes)))
-    return {
+    meta = {
         stock.code: {
             "name": stock.name,
             "market": stock.market,
@@ -115,3 +115,17 @@ async def _stock_meta(
         }
         for stock in result.scalars()
     }
+    # US 티커는 stocks가 아니라 stocks_us에 있다(ORM 모델 없는 애드혹 테이블).
+    missing = [code for code in codes if code not in meta]
+    if missing:
+        placeholders = ",".join(f":c{i}" for i in range(len(missing)))
+        rows = await session.execute(
+            text(
+                f"SELECT ticker, name, exchange, sector FROM stocks_us"
+                f" WHERE ticker IN ({placeholders})"
+            ),
+            {f"c{i}": code for i, code in enumerate(missing)},
+        )
+        for ticker, name, exchange, sector in rows:
+            meta[ticker] = {"name": name, "market": exchange, "sector": sector}
+    return meta

@@ -10,7 +10,10 @@ from apscheduler.triggers.cron import CronTrigger
 
 from backend.app.core.config import settings
 from backend.app.services.batch.broker_order_sync import run_broker_order_sync
-from backend.app.services.batch.daily_analysis import run_daily_analysis
+from backend.app.services.batch.daily_analysis import (
+    run_daily_analysis,
+    run_weekly_sleeve_insights,
+)
 from backend.app.services.batch.daily_report import run_daily_report
 from backend.app.services.batch.data_sync import run_data_sync
 from backend.app.services.batch.proposal_generator import (
@@ -35,6 +38,14 @@ def create_batch_scheduler() -> AsyncIOScheduler:
         max_instances=1,
         coalesce=True,
         kwargs={"limit": 10},
+    )
+    scheduler.add_job(
+        run_weekly_sleeve_insights,
+        CronTrigger.from_crontab(settings.WEEKLY_INSIGHTS_CRON, timezone=timezone),
+        id="weekly_sleeve_insights",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
     scheduler.add_job(
         run_daily_report,

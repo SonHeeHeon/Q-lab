@@ -62,11 +62,15 @@ class QuantApi {
   QuantApi(this._ref);
   final Ref _ref;
 
-  Future<UndervaluedReport> getUndervalued({DateTime? date}) async {
+  /// [strategyName] null이면 백엔드 기본 전략(KR 주식). 슬리브별 조회는
+  /// etf_rotation_kr / us_stock_v1 / etf_rotation_us 를 넘긴다.
+  Future<UndervaluedReport> getUndervalued(
+      {DateTime? date, String? strategyName}) async {
     final dio = _ref.read(dioProvider);
     final res = await dio.get<dynamic>(
       '/api/quant/undervalued',
       queryParameters: {
+        if (strategyName != null) 'strategy_name': strategyName,
         if (date != null)
           'date': '${date.year.toString().padLeft(4, '0')}-'
               '${date.month.toString().padLeft(2, '0')}-'

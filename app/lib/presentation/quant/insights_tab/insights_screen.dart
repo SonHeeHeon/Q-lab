@@ -43,7 +43,10 @@ class InsightsScreen extends ConsumerWidget {
           IconButton(
             tooltip: '새로고침',
             icon: const Icon(Icons.refresh),
-            onPressed: () => ref.invalidate(undervaluedReportProvider),
+            onPressed: () {
+              ref.invalidate(undervaluedReportProvider);
+              ref.invalidate(sleeveReportProvider); // 슬리브 섹션 3종 일괄
+            },
           ),
         ],
       ),
@@ -117,7 +120,59 @@ class _Body extends StatelessWidget {
             _ItemCard(item: item),
             const SizedBox(height: 8),
           ],
+        // 슬리브별 top10 — 주간 배치 스냅샷(위 KR 주식 리포트와 별개로 항상 최신).
+        const _SleeveSection(title: '🇰🇷 한국 ETF', strategyName: 'etf_rotation_kr'),
+        const _SleeveSection(title: '🇺🇸 미국 주식', strategyName: 'us_stock_v1'),
+        const _SleeveSection(title: '🇺🇸 미국 ETF', strategyName: 'etf_rotation_us'),
         const SizedBox(height: 24),
+      ],
+    );
+  }
+}
+
+/// 슬리브 한 개의 저평가 top10 섹션(제목 + 기준일/전략 칩 + 카드 목록).
+class _SleeveSection extends ConsumerWidget {
+  const _SleeveSection({required this.title, required this.strategyName});
+  final String title;
+  final String strategyName;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final async = ref.watch(sleeveReportProvider(strategyName));
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 24),
+        Text(title,
+            style: theme.textTheme.titleMedium
+                ?.copyWith(fontWeight: FontWeight.w700)),
+        const SizedBox(height: 8),
+        async.when(
+          loading: () => const Padding(
+            padding: EdgeInsets.all(16),
+            child: Center(child: CircularProgressIndicator()),
+          ),
+          error: (e, _) => Text('불러오기 실패: $e',
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: theme.colorScheme.error)),
+          data: (report) {
+            if (report.items.isEmpty) {
+              return Text('데이터 없음 — 주간 배치 실행 전이거나 전략 미보유',
+                  style: theme.textTheme.bodySmall);
+            }
+            return Column(
+              children: [
+                _HeaderBar(report: report),
+                const SizedBox(height: 8),
+                for (final item in report.items.take(10)) ...[
+                  _ItemCard(item: item),
+                  const SizedBox(height: 8),
+                ],
+              ],
+            );
+          },
+        ),
       ],
     );
   }
