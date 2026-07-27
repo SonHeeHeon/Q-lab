@@ -60,6 +60,8 @@ def _metrics_of(curve_points: list) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--trials", type=int, default=300)
+    parser.add_argument("--max-weight", type=float, default=None,
+                        help="슬리브 집중 상한(예: 0.5) — 무제약 쏠림의 실용 대안")
     parser.add_argument("--skip-oos", action="store_true")
     args = parser.parse_args()
 
@@ -104,6 +106,9 @@ def main() -> None:
         w = [trial.suggest_float(f"w_{i}", 0.0, 1.0) for i in range(4)]
         if sum(w) <= 0:
             return -1e9
+        norm = [x / sum(w) for x in w]
+        if args.max_weight is not None and max(norm) > args.max_weight + 1e-9:
+            return -1e9
         m = blended_metrics(w)
         return m["calmar"] if math.isfinite(m["calmar"]) else -1e9
 
@@ -123,6 +128,7 @@ def main() -> None:
         oos = optimize_sleeve_weights_oos(
             strategies, train_years=5, test_years=1, objective="calmar",
             trials=150, after_tax=True, krw_view=True,
+            max_weight=args.max_weight,
         )
         print(f"[mix] OOS w={[round(x,3) for x in oos['weights']]}"
               f" folds={oos['folds']} oos_calmar_mean={oos['oos_metric_mean']:.3f}",

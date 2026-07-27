@@ -249,12 +249,18 @@ def optimize_sleeve_weights(
     db_path: Path | None = None,
     after_tax: bool = False,
     krw_view: bool = False,
+    max_weight: float | None = None,
 ) -> dict:
     """Optuna search over the sleeve weight simplex.
 
     Each strategy's backtest runs exactly once (cached curves); every trial
     only re-blends the cached curves and recomputes metrics, so the search is
     cheap even with hundreds of trials.
+
+    ``max_weight``: 정규화 후 어느 슬리브도 이 비중을 넘지 못하게 하는 집중
+    상한(예: 0.5). 무제약 최적이 한 슬리브에 쏠릴 때(과거 구간 특수성·집중
+    리스크) 실용적 분산 해를 얻는 용도 — 초과 시 해당 trial에 페널티를 줘
+    탐색이 유효 영역으로 수렴한다.
     """
     if not strategies:
         raise ValueError("strategies must not be empty.")
@@ -289,6 +295,8 @@ def optimize_sleeve_weights(
         if sum(raw_weights) <= 0:
             return -1_000_000_000.0
         norm_weights = _normalize_weights(raw_weights)
+        if max_weight is not None and max(norm_weights) > max_weight + 1e-9:
+            return -1_000_000_000.0
         blended = blend_curves(curves, norm_weights, rebalance=rebalance)
         metrics = compute_metrics(blended, [])
         final_nav = blended[-1][1] if blended else 0.0
@@ -332,6 +340,7 @@ def optimize_sleeve_weights_oos(
     db_path: Path | None = None,
     after_tax: bool = False,
     krw_view: bool = False,
+    max_weight: float | None = None,
 ) -> dict:
     """Walk-forward OOS weight search across every sleeve.
 
@@ -387,6 +396,7 @@ def optimize_sleeve_weights_oos(
             db_path=db_path,
             after_tax=after_tax,
             krw_view=krw_view,
+            max_weight=max_weight,
         )
         weights = optimized["weights"]
 
