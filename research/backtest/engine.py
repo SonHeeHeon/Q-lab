@@ -1065,7 +1065,7 @@ def _apply_capital_gains_tax(
             continue
         entry = entry_prices.get(trade.code)
         realized_gain = (trade.price - entry) * trade.qty if entry is not None else 0.0
-        gains_tax = tax_model.gains_tax_for(trade.code, realized_gain)
+        gains_tax = tax_model.gains_tax_for(trade.code, realized_gain, trade.date)
         trade.gains_tax = gains_tax
         if gains_tax:
             cash -= gains_tax

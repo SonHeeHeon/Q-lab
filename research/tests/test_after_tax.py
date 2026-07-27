@@ -57,9 +57,12 @@ def test_default_tax_model_for_kr_universe():
     assert default_tax_model_for_universe("KOSPI200") is not None
 
 
-def test_default_tax_model_for_us_universe_is_none():
-    assert default_tax_model_for_universe("NASDAQ100") is None
-    assert default_tax_model_for_universe("ETF_US") is None
+def test_default_tax_model_for_us_universe_is_annual_model():
+    # 2026-07-28: US 세후 지원 — 연간 손익통산 양도세 모델(상세는 test_tax_us.py).
+    from research.backtest.tax_kr import USCapitalGainsTaxModel
+
+    assert isinstance(default_tax_model_for_universe("NASDAQ100"), USCapitalGainsTaxModel)
+    assert isinstance(default_tax_model_for_universe("ETF_US"), USCapitalGainsTaxModel)
 
 
 # --- _apply_capital_gains_tax pure-helper tests --------------------------------

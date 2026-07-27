@@ -23,7 +23,7 @@ US_COST_MODEL = CostModel(commission_rate=0.001, sell_tax_rate=0.0, slippage_bps
 # KR 상장 ETF 매도는 증권거래세 면제(수수료·슬리피지만).
 KR_ETF_COST_MODEL = CostModel(commission_rate=0.00015, sell_tax_rate=0.0, slippage_bps=10.0)
 
-_US_UNIVERSES = {"NASDAQ100", "ETF_US"}
+_US_UNIVERSES = {"NASDAQ100", "US_LARGE", "US_ALL", "SP1500", "ETF_US"}
 _KR_ETF_UNIVERSES = {"ETF_KR"}
 
 

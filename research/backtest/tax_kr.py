@@ -29,9 +29,10 @@ from __future__ import annotations
 
 import csv
 import re
+from datetime import date as Date
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, PrivateAttr
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TAX_CLASS_FILE = PROJECT_ROOT / "data" / "manual" / "kr_etf_tax_class.csv"
@@ -199,13 +200,16 @@ class TaxModel(BaseModel):
 
     etf_taxable_gains_rate: float = ETF_TAXABLE_GAINS_RATE
 
-    def gains_tax_for(self, code: str, realized_gain: float) -> float:
+    def gains_tax_for(
+        self, code: str, realized_gain: float, trade_date: Date | None = None
+    ) -> float:
         """Capital-gains tax owed on one SELL's realized gain.
 
         Only a taxable ETF (``classify_kr_instrument(code) ==
         "etf_taxable"``) with a positive realized gain owes anything —
         mirrors the per-sale withholding model in ``estimate_sell_tax``
-        (no cross-position loss offset).
+        (no cross-position loss offset). ``trade_date`` is accepted for
+        interface parity with the US annual model and ignored here.
         """
         if realized_gain <= 0:
             return 0.0
@@ -214,19 +218,58 @@ class TaxModel(BaseModel):
         return self.etf_taxable_gains_rate * realized_gain
 
 
-# US universes have no v1 after-tax support (KR capital-gains tax rules only).
-_TAX_UNSUPPORTED_UNIVERSES = {"NASDAQ100", "ETF_US"}
+# 미국 주식·ETF 양도소득세(한국 개인): 연간 실현손익 통산 − 기본공제 250만원
+# → 22%(양도세 20% + 지방세 2%). 백테스트 통화가 USD라 공제액은 고정환율
+# 근사(아래 상수)로 USD 환산한다 — 연도별 실제 환율 대신 장기 평균을 쓰는
+# 문서화된 근사.
+US_GAINS_TAX_RATE = 0.22
+US_GAINS_EXEMPTION_KRW = 2_500_000
+US_EXEMPTION_FX_APPROX = 1_300.0  # KRW/USD 장기 평균 근사(2016–2026)
+
+
+class USCapitalGainsTaxModel(TaxModel):
+    """US 양도소득세 — 연간 손익통산 모델(개인 계좌).
+
+    per-sell 훅에서 "그 해 누적 순이익 기준 세액과 이미 부과한 세액의 차액"을
+    돌려준다: 이익 뒤 손실이 나면 음수(환급)가 나와 연말 손익통산과 수치가
+    일치한다(개별 trade의 gains_tax가 음수일 수 있음 — 합계는 연 단위 정확).
+    연도가 바뀌면 누적이 리셋된다. KR ETF 세율 필드는 상속하지만 미사용.
+    """
+
+    us_rate: float = US_GAINS_TAX_RATE
+    annual_exemption_usd: float = US_GAINS_EXEMPTION_KRW / US_EXEMPTION_FX_APPROX
+
+    _year: int | None = PrivateAttr(default=None)
+    _net_gain: float = PrivateAttr(default=0.0)
+    _charged: float = PrivateAttr(default=0.0)
+
+    def gains_tax_for(
+        self, code: str, realized_gain: float, trade_date: Date | None = None
+    ) -> float:
+        year = trade_date.year if trade_date is not None else None
+        if year != self._year:
+            self._year = year
+            self._net_gain = 0.0
+            self._charged = 0.0
+        self._net_gain += realized_gain
+        owed = self.us_rate * max(0.0, self._net_gain - self.annual_exemption_usd)
+        delta = owed - self._charged
+        self._charged = owed
+        return delta
+
+
+_US_TAX_UNIVERSES = {"NASDAQ100", "US_LARGE", "US_ALL", "SP1500", "ETF_US"}
 
 
 def default_tax_model_for_universe(universe: str) -> TaxModel | None:
-    """Default ``TaxModel`` for a backtest universe, or ``None`` if unsupported.
+    """Default ``TaxModel`` for a backtest universe.
 
     KR universes (including ``ETF_KR``) get a ``TaxModel()``: plain stock
     universes realize zero tax anyway (``classify_kr_instrument`` returns
     ``"stock"``), so this is a no-op cost for them and only matters for
-    ``ETF_KR``. US universes return ``None`` — after-tax modeling for US
-    capital gains is out of scope for v1.
+    ``ETF_KR``. US universes get the annual-netting capital-gains model
+    (fresh instance per call — it is stateful across a run).
     """
-    if universe.upper() in _TAX_UNSUPPORTED_UNIVERSES:
-        return None
+    if universe.upper() in _US_TAX_UNIVERSES:
+        return USCapitalGainsTaxModel()
     return TaxModel()

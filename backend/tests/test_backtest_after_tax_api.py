@@ -88,7 +88,10 @@ async def test_after_tax_true_passes_tax_model_for_etf_kr(monkeypatch, tmp_path)
     assert "warnings" not in envelope.data
 
 
-async def test_after_tax_true_nasdaq100_falls_back_pretax_with_warning(monkeypatch, tmp_path):
+async def test_after_tax_true_nasdaq100_applies_us_annual_model(monkeypatch, tmp_path):
+    # 2026-07-28: US 세후 지원 — 폴백·경고 없이 연간 양도세 모델이 적용된다.
+    from research.backtest.tax_kr import USCapitalGainsTaxModel
+
     captured: dict = {}
     _patch_run_and_write(monkeypatch, tmp_path, "run_us", captured)
 
@@ -96,12 +99,10 @@ async def test_after_tax_true_nasdaq100_falls_back_pretax_with_warning(monkeypat
     envelope = await backtest_api.run_backtest_api(strategy, after_tax=True)
 
     assert envelope.error is None
-    assert captured["tax_model"] is None
-    assert captured["run_options"] == {"after_tax": False}
-    assert envelope.data["after_tax"] is False
-    assert envelope.data["warnings"] == [
-        "after_tax 미지원 유니버스(NASDAQ100) — 세전으로 실행"
-    ]
+    assert isinstance(captured["tax_model"], USCapitalGainsTaxModel)
+    assert captured["run_options"] == {"after_tax": True}
+    assert envelope.data["after_tax"] is True
+    assert "warnings" not in envelope.data
 
 
 async def test_after_tax_false_default_no_tax_model(monkeypatch, tmp_path):
