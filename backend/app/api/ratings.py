@@ -1,9 +1,12 @@
-"""등급(레이팅) 조회/온디맨드 재계산 API (Phase T5).
+"""등급(레이팅) 조회/온디맨드 재계산 API (Phase T5, 2-슬리브 T10).
 
 ``/``, ``/positions``, ``/status`` 는 배치(``rating_batch.py``)가 이미 채워둔
 ``store.py`` 결과를 읽기만 한다. ``/compute`` 는 온디맨드 1종목 재계산 —
 배치와 동일하게 ``store.RATING_LOCK``을 잡아 동시 upsert 경합을 막는다
-(이미 잠겨 있으면 계산을 시도하지 않고 409로 응답한다).
+(이미 잠겨 있으면 계산을 시도하지 않고 409로 응답한다). 코드가 ETF_KR
+유니버스에 속하면 ETF 슬리브 전략으로 채점하고 순위 기반 등급 재매핑
+(``rating_batch.remap_etf_grades``)을 적용한다 — EOD 배치와 동일한 로직을
+공유해 두 경로의 등급 산정이 어긋나지 않게 한다.
 """
 
 from __future__ import annotations
@@ -17,6 +20,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
 from backend.app.schemas.portfolio import ApiEnvelope, ApiError
+from backend.app.services.batch.rating_batch import (
+    etf_universe_codes,
+    remap_etf_grades,
+    resolve_etf_strategy,
+)
 from backend.app.services.ratings import store
 from backend.app.services.ratings.buy_axis import (
     compute_buy_ratings,
@@ -70,14 +78,31 @@ async def compute_rating(
             content=envelope.model_dump(mode="json"),
         )
 
+    etf_set = await etf_universe_codes()
+
     async with store.RATING_LOCK:
-        setting_row = await session.get(Setting, "rating_strategy_name")
-        strategy, _warning = resolve_rating_strategy(
-            setting_row.value if setting_row is not None else None
-        )
-        result = await asyncio.to_thread(
-            compute_buy_ratings, strategy, [normalized], as_of=None
-        )
+        etf_strategy = None
+        if normalized in etf_set:
+            etf_setting_row = await session.get(Setting, "etf_strategy_name")
+            etf_strategy, _etf_warning = resolve_etf_strategy(
+                etf_setting_row.value if etf_setting_row is not None else None
+            )
+
+        if etf_strategy is not None:
+            # 이미 ETF_KR 유니버스에 속한 코드라 extras 없이 유니버스 스코어링만
+            # 하면 되지만, universe-only 호출과 동일하게 넘겨도 결과는 같다.
+            raw_result = await asyncio.to_thread(
+                compute_buy_ratings, etf_strategy, [normalized], as_of=None
+            )
+            result = remap_etf_grades(raw_result, top_n=etf_strategy.top_n)
+        else:
+            setting_row = await session.get(Setting, "rating_strategy_name")
+            strategy, _warning = resolve_rating_strategy(
+                setting_row.value if setting_row is not None else None
+            )
+            result = await asyncio.to_thread(
+                compute_buy_ratings, strategy, [normalized], as_of=None
+            )
         await store.upsert_stock_ratings(
             result.ratings, result.strategy_name, result.as_of
         )
@@ -100,10 +125,17 @@ async def get_ratings_status(
     strategy_name = (
         setting_row.value if setting_row is not None else settings.DEFAULT_STRATEGY_NAME
     )
+    etf_setting_row = await session.get(Setting, "etf_strategy_name")
+    etf_strategy_name = (
+        etf_setting_row.value
+        if etf_setting_row is not None
+        else settings.DEFAULT_ETF_STRATEGY_NAME
+    )
     data = {
         "eod": runs.get("EOD"),
         "intraday": runs.get("INTRADAY") or runs.get("EOD"),
         "strategy_name": strategy_name,
+        "etf_strategy_name": etf_strategy_name,
         "scheduler_running": hasattr(request.app.state, "batch_scheduler"),
     }
     return ApiEnvelope(data=data, error=None)

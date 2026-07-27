@@ -10,7 +10,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../data/api/ratings_api.dart';
 import '../../data/api/stocks_api.dart';
+import '../../shared/widgets/rating_chip.dart';
 import 'stocks_controller.dart';
 
 class StockSearchScreen extends ConsumerStatefulWidget {
@@ -73,13 +75,27 @@ class _StockSearchScreenState extends ConsumerState<StockSearchScreen> {
               builder: (ctx, ref, _) {
                 final async = ref.watch(stockSearchProvider(_query));
                 return async.when(
-                  data: (results) => results.isEmpty
-                      ? const _EmptyResults()
-                      : ListView.separated(
-                          itemCount: results.length,
-                          separatorBuilder: (_, __) => const Divider(height: 1),
-                          itemBuilder: (_, i) => _SearchTile(result: results[i]),
-                        ),
+                  data: (results) {
+                    if (results.isEmpty) return const _EmptyResults();
+                    // Batch buy-axis lookup for every visible code in one
+                    // request (ratingsMapProvider caches by the sorted key,
+                    // so this shares an in-flight fetch with other screens
+                    // showing the same codes). Search-tile chips only ever
+                    // read from this already-fetched map — no per-tile
+                    // compute calls, so never-rated codes cost nothing extra.
+                    final codes = results.map((r) => r.displayCode).toList();
+                    final ratings =
+                        ref.watch(ratingsMapProvider(ratingsKey(codes))).valueOrNull ??
+                            const <String, StockRating>{};
+                    return ListView.separated(
+                      itemCount: results.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (_, i) => _SearchTile(
+                        result: results[i],
+                        rating: ratings[results[i].displayCode],
+                      ),
+                    );
+                  },
                   loading: () => const Center(child: CircularProgressIndicator()),
                   error: (e, _) => Center(
                     child: Column(
@@ -108,8 +124,13 @@ class _StockSearchScreenState extends ConsumerState<StockSearchScreen> {
 // ---------------------------------------------------------------------------
 
 class _SearchTile extends StatelessWidget {
-  const _SearchTile({required this.result});
+  const _SearchTile({required this.result, this.rating});
   final StockSearchResult result;
+
+  /// Buy-axis rating for this code, if already fetched. Only rendered when
+  /// `status == 'OK'` — NO_DATA/UNSUPPORTED chips would spam the list since
+  /// most searched codes have never been through the strategy universe.
+  final StockRating? rating;
 
   @override
   Widget build(BuildContext context) {
@@ -160,6 +181,8 @@ class _SearchTile extends StatelessWidget {
             ),
             if (result.market != null)
               _Badge(label: result.market!, color: theme.colorScheme.tertiary),
+            if (rating != null && rating!.status.toUpperCase() == 'OK')
+              RatingChip.buy(rating!.buyGrade, dense: true),
           ],
         ),
       ),

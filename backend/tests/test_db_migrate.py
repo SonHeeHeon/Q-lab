@@ -44,6 +44,9 @@ def test_upgrade_all_brings_fresh_dbs_to_head(
     assert "order_proposals" in _tables(service_db)
     # Core service tables too.
     assert {"accounts", "trades"} <= _tables(service_db)
+    # trades.broker (T4): Toss trades must be taggable as broker='TOSS'
+    # instead of masquerading as the KIS PAPER account.
+    assert "broker" in _cols(service_db, "trades")
     # Research branch reached head (stocks_us itself is created out-of-band by
     # download_us_universe, so its korean_name columns aren't asserted here).
     assert research_db.exists()

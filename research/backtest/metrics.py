@@ -21,6 +21,7 @@ class Metrics(BaseModel):
     avg_holding_days: float
     turnover: float
     n_trades: int
+    total_tax_paid: float = 0.0
 
 
 def compute_metrics(
@@ -41,6 +42,7 @@ def compute_metrics(
             avg_holding_days=0.0,
             turnover=0.0,
             n_trades=len(trades),
+            total_tax_paid=_total_tax_paid(trades),
         )
 
     frame = pd.DataFrame(equity_curve, columns=["date", "nav"])
@@ -76,6 +78,19 @@ def compute_metrics(
         avg_holding_days=avg_holding_days,
         turnover=turnover,
         n_trades=len(trades),
+        total_tax_paid=_total_tax_paid(trades),
+    )
+
+
+def _total_tax_paid(trades: list[SimulatedTrade]) -> float:
+    """Σ(sell tax + capital-gains tax) over all trades.
+
+    ``getattr(..., 0.0)`` tolerates a trade object that predates the
+    ``gains_tax`` field (e.g. a legacy in-memory object built without it)
+    rather than raising.
+    """
+    return float(
+        sum(trade.tax + getattr(trade, "gains_tax", 0.0) for trade in trades)
     )
 
 

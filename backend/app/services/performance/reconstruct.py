@@ -174,3 +174,44 @@ def realized_pnl_on(trades: Sequence[FilledTrade], day: Date) -> float:
             if lot_qty > matched:
                 lots[trade.code].appendleft((lot_qty - matched, cost_per_share))
     return realized
+
+
+def realized_pnl_between(
+    trades: Sequence[FilledTrade],
+    start_day: Date,
+    end_day: Date,
+    *,
+    code_filter: set[str] | None = None,
+) -> float:
+    """FIFO realized PnL (fees/taxes included) from sells filled within
+    ``[start_day, end_day]`` (inclusive), optionally restricted to codes in
+    ``code_filter``.
+
+    Walks the full fill history across all codes (not just filtered ones) to
+    build correct FIFO cost-basis lots — filtering trades before matching
+    would corrupt lot ordering for a code — then sums the realized
+    profit/loss of sells that both fall inside the date window and pass the
+    code filter. Mirrors the FIFO matching in ``realized_pnl_on``.
+    """
+    lots: dict[str, deque[tuple[int, float]]] = defaultdict(deque)
+    realized = 0.0
+    for trade in sorted(trades, key=lambda item: item.date):
+        if trade.qty <= 0:
+            continue
+        if trade.side.upper() == "BUY":
+            cost_per_share = -trade.cash_flow / trade.qty
+            lots[trade.code].append((trade.qty, cost_per_share))
+            continue
+        remaining = trade.qty
+        proceeds_per_share = trade.cash_flow / trade.qty
+        in_window = start_day <= trade.date <= end_day
+        matches_filter = code_filter is None or trade.code in code_filter
+        while remaining > 0 and lots[trade.code]:
+            lot_qty, cost_per_share = lots[trade.code].popleft()
+            matched = min(remaining, lot_qty)
+            if in_window and matches_filter:
+                realized += (proceeds_per_share - cost_per_share) * matched
+            remaining -= matched
+            if lot_qty > matched:
+                lots[trade.code].appendleft((lot_qty - matched, cost_per_share))
+    return realized

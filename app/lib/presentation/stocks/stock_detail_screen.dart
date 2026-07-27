@@ -13,14 +13,40 @@ import 'package:intl/intl.dart';
 
 import '../../core/config.dart';
 import '../../data/api/portfolio_api.dart' show BrokerType, OrderDirection;
+import '../../data/api/ratings_api.dart';
 import '../../data/api/stocks_api.dart';
 import '../../data/api/watchlist_api.dart';
 import '../../domain/entities/account.dart';
 import '../../shared/format/money.dart';
+import '../../shared/widgets/rating_chip.dart';
 import '../alerts/alerts_screen.dart' show showCreateAlertDialog;
 import '../portfolio/order_sheet.dart';
 import '../settings/settings_controller.dart';
 import 'stocks_controller.dart';
+
+/// Sell-axis ratings for every open position, scoped to this screen. A plain
+/// (non-family) provider — every `_DetailBodyState` watch shares the same
+/// cached fetch, so visiting several stock detail screens in a row doesn't
+/// refire `GET /api/ratings/positions` per visit.
+final _positionRatingsProvider =
+    FutureProvider.autoDispose<List<PositionRating>>((ref) {
+  return ref.read(ratingsApiProvider).getPositions();
+});
+
+/// SELL_NOW/SELL/WATCH/HOLD/KEEP severity, most urgent first (mirrors
+/// `sell_axis.py`'s doc'd priority order). When a code is held across
+/// multiple accounts, the most urgent rating is the one worth surfacing.
+const _sellSeverity = ['SELL_NOW', 'SELL', 'WATCH', 'HOLD', 'KEEP'];
+
+PositionRating? _mostUrgentSellRating(List<PositionRating> ratings) {
+  if (ratings.isEmpty) return null;
+  for (final grade in _sellSeverity) {
+    for (final r in ratings) {
+      if (r.sellGrade.toUpperCase() == grade) return r;
+    }
+  }
+  return ratings.first;
+}
 
 final _pct = NumberFormat('+0.00;-0.00');
 final _date = DateFormat('yy.MM.dd');
@@ -75,6 +101,11 @@ class _DetailBody extends ConsumerStatefulWidget {
 
 class _DetailBodyState extends ConsumerState<_DetailBody> {
   bool _watchlistLoading = false;
+  bool _ratingComputing = false;
+  // Tracks whether an on-demand compute already ran this session, so a
+  // still-NO_DATA result reads as "insufficient data" instead of looping
+  // back to the same "등급 계산" button forever.
+  bool _ratingComputeAttempted = false;
 
   StockDetail get d => widget.detail;
 
@@ -120,6 +151,34 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
       }
     } finally {
       if (mounted) setState(() => _watchlistLoading = false);
+    }
+  }
+
+  // ── On-demand rating compute ────────────────────────────────────────────────
+
+  /// Triggers `POST /api/ratings/compute` for a code outside the last
+  /// scheduled batch (e.g. just-listed, or never scanned). Can take 5-15s —
+  /// the button disables + shows a spinner while awaiting. Always refreshes
+  /// [ratingsMapProvider] afterward (success or NO_DATA) so the UI reflects
+  /// whatever the backend now has on record, rather than caching a stale
+  /// pre-compute NO_DATA/absent state.
+  Future<void> _computeRating(String code) async {
+    setState(() => _ratingComputing = true);
+    try {
+      await ref.read(ratingsApiProvider).computeRating(code);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('등급 계산 실패: $e')));
+      }
+    } finally {
+      ref.invalidate(ratingsMapProvider(ratingsKey([code])));
+      if (mounted) {
+        setState(() {
+          _ratingComputing = false;
+          _ratingComputeAttempted = true;
+        });
+      }
     }
   }
 
@@ -217,6 +276,23 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
             ? Colors.redAccent
             : Colors.blueAccent;
 
+    // ── Ratings: buy axis (batch-of-1 through the shared family provider so
+    // it de-dupes with any other screen requesting the same code) + sell
+    // axis (only relevant while actually holding the position). ─────────────
+    final code = isUs ? d.symbol : d.code;
+    final buyRatingsAsync = ref.watch(ratingsMapProvider(ratingsKey([code])));
+    final buyRating = buyRatingsAsync.valueOrNull?[code];
+    final buyRatingLoading = buyRatingsAsync.isLoading && !buyRatingsAsync.hasValue;
+
+    final isHolding = d.holding?.isHolding ?? false;
+    PositionRating? sellRating;
+    if (isHolding) {
+      final positionRatings = ref.watch(_positionRatingsProvider).valueOrNull ?? const [];
+      sellRating = _mostUrgentSellRating(
+        positionRatings.where((p) => p.code == code).toList(),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: Column(
@@ -254,6 +330,17 @@ class _DetailBodyState extends ConsumerState<_DetailBody> {
                   marketCountry: d.marketCountry,
                   broker: d.broker,
                   market: d.market,
+                ),
+                // ── Rating row (buy axis + sell axis when held) ────────────
+                _RatingRow(
+                  isUs: isUs,
+                  buyRating: buyRating,
+                  buyRatingLoading: buyRatingLoading,
+                  computing: _ratingComputing,
+                  computeAttempted: _ratingComputeAttempted,
+                  onCompute: () => _computeRating(code),
+                  isHolding: isHolding,
+                  sellRating: sellRating,
                 ),
                 // ── Timeframe candlestick chart ────────────────────────────
                 Padding(
@@ -395,6 +482,111 @@ class _PriceHeader extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Rating row — buy axis (always) + sell axis (only while holding).
+//
+// Buy axis states: OK → grade chip · UNSUPPORTED (US ticker or off-universe)
+// → honest label, no button · NO_DATA before any on-demand attempt → "등급
+// 계산" button · still NO_DATA after computing once → honest "데이터 부족"
+// (retrying won't help — it's a data-availability gap, not a stale cache).
+// ---------------------------------------------------------------------------
+
+class _RatingRow extends StatelessWidget {
+  const _RatingRow({
+    required this.isUs,
+    required this.buyRating,
+    required this.buyRatingLoading,
+    required this.computing,
+    required this.computeAttempted,
+    required this.onCompute,
+    required this.isHolding,
+    required this.sellRating,
+  });
+
+  final bool isUs;
+  final StockRating? buyRating;
+  final bool buyRatingLoading;
+  final bool computing;
+  final bool computeAttempted;
+  final VoidCallback onCompute;
+  final bool isHolding;
+  final PositionRating? sellRating;
+
+  @override
+  Widget build(BuildContext context) {
+    if (isUs && !isHolding) {
+      // Nothing ratable to show at all — skip the row instead of a bare label.
+      return const SizedBox.shrink();
+    }
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 6,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          _buildBuySlot(theme),
+          if (isHolding && sellRating != null)
+            RatingChip.sell(sellRating!.sellGrade, reason: sellRating!.reason),
+        ],
+      ),
+    );
+  }
+
+  Widget _muted(ThemeData theme, String label) => Text(
+        label,
+        style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline),
+      );
+
+  Widget _buildBuySlot(ThemeData theme) {
+    if (isUs) return _muted(theme, '등급 미지원 (미국 종목)');
+    if (buyRatingLoading) {
+      return SizedBox(
+        width: 14,
+        height: 14,
+        child: CircularProgressIndicator(
+          strokeWidth: 2,
+          color: theme.colorScheme.outline,
+        ),
+      );
+    }
+
+    final r = buyRating;
+    final status = r?.status.toUpperCase();
+    if (status == 'OK') return RatingChip.buy(r!.buyGrade);
+    if (status == 'UNSUPPORTED') return _muted(theme, '등급 미지원 종목');
+
+    // NO_DATA or not yet in the batch at all.
+    if (computing) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: theme.colorScheme.outline,
+            ),
+          ),
+          const SizedBox(width: 8),
+          _muted(theme, '등급 계산 중…'),
+        ],
+      );
+    }
+    if (computeAttempted) return _muted(theme, '데이터 부족');
+    return OutlinedButton(
+      onPressed: onCompute,
+      style: OutlinedButton.styleFrom(
+        visualDensity: VisualDensity.compact,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+      ),
+      child: const Text('등급 계산'),
     );
   }
 }

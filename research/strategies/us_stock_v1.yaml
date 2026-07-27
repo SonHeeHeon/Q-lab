@@ -1,0 +1,43 @@
+name: us_stock_v1
+description: >-
+  US 대형주(나스닥100+S&P500) 기본 멀티팩터 방정식 — Value/Quality/Momentum/LowVol
+  4그룹 균등 가중, 상위 25종목 분기 리밸런스. 교과서적 출발점으로, 그룹 가중치·팩터
+  구성을 바꿔가며 백테스트 랩에서 직접 실험하는 용도. 튜닝한 개인 전략은
+  research/strategies/private/ (gitignore) 에 같은 이름으로 두면 이 파일을 덮는다.
+universe: US_LARGE
+rebalance_freq: QUARTERLY
+top_n: 25
+start_date: 2011-07-01
+end_date: 2026-07-01
+
+factors: []
+
+filters: []
+
+groups:
+  - name: Value
+    weight: 1.0
+    factors:
+      - {factor: PER, higher_is_better: false}
+      - {factor: PBR, higher_is_better: false}
+      - {factor: FCF_YIELD, higher_is_better: true}
+  - name: Quality
+    weight: 1.0
+    factors:
+      - {factor: ROE, higher_is_better: true}
+      - {factor: GP_A, higher_is_better: true}
+  - name: Momentum
+    weight: 1.0
+    factors:
+      - {factor: MOMENTUM_12M, higher_is_better: true}
+      - {factor: MOMENTUM_6M, higher_is_better: true}
+  - name: LowVol
+    weight: 1.0
+    factors:
+      - {factor: VOLATILITY_252D, higher_is_better: false}
+      - {factor: BETA_252D, higher_is_better: false}
+
+min_groups: 2
+winsor_pct: 0.01
+clip_z: 3.0
+use_regime: false

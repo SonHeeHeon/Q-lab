@@ -180,7 +180,14 @@ class Settings(BaseSettings):
     RATING_INTRADAY_CRON: str = "0 9-15 * * MON-FRI"
     BROKER_ORDER_SYNC_LOOKBACK_DAYS: int = 7
     BROKER_ORDER_SYNC_ACCOUNTS: str = "PAPER,REAL,ISA"
+    # Toss 주문 체결 동기화(broker_order_sync의 Toss 대응, KIS 배치 이후 실행)
+    TOSS_ORDER_SYNC_CRON: str = "15 16 * * MON-FRI"
+    TOSS_ORDER_SYNC_LOOKBACK_DAYS: int = 7
     DEFAULT_STRATEGY_NAME: str = "value_v1"
+    # 2-슬리브 퀀트 풀: KR ETF 슬리브 전략명과 NAV 대비 ETF 슬리브 비중 기본값
+    # (주식 슬리브 비중은 1 - sleeve_etf_weight).
+    DEFAULT_ETF_STRATEGY_NAME: str = "etf_rotation_kr"
+    DEFAULT_SLEEVE_ETF_WEIGHT: float = 0.3
 
     @field_validator("TOSS_ACCOUNT_SEQ", mode="before")
     @classmethod

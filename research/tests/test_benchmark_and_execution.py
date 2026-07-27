@@ -11,8 +11,10 @@ import pytest
 import research.backtest.engine as eng
 from research.backtest.benchmark import benchmark_relative
 from research.backtest.simulator import (
+    KR_ETF_COST_MODEL,
     US_COST_MODEL,
     default_cost_model_for_universe,
+    execute_trade,
 )
 from shared.domain.strategy import StrategyDefinition
 
@@ -62,9 +64,30 @@ def test_us_universes_get_us_costs():
 
 
 def test_kr_universes_keep_krx_costs():
-    for uni in ("KOSPI200", "KOSPI_TOP100", "ETF_KR", "KOSDAQ150"):
+    for uni in ("KOSPI200", "KOSPI_TOP100", "KOSDAQ150"):
         model = default_cost_model_for_universe(uni)
         assert model.sell_tax_rate == pytest.approx(0.0023)
+
+
+def test_kr_etf_universe_is_tax_exempt_on_sell():
+    model = default_cost_model_for_universe("ETF_KR")
+    assert model == KR_ETF_COST_MODEL
+    assert model.sell_tax_rate == 0.0
+    assert model.commission_rate == pytest.approx(0.00015)
+
+
+def test_kr_etf_sell_has_no_tax_in_execute_trade():
+    trade = execute_trade(
+        code="069500",
+        side="SELL",
+        qty=10,
+        close_price=10_000.0,
+        trade_date=date(2026, 1, 2),
+        cost_model=KR_ETF_COST_MODEL,
+    )
+    assert trade is not None
+    assert trade.tax == 0.0
+    assert trade.cash_flow == pytest.approx(trade.notional - trade.commission)
 
 
 # --- execution lag -------------------------------------------------------------

@@ -29,6 +29,7 @@ import '../presentation/principles/principles_screen.dart';
 import '../presentation/proposals/proposals_screen.dart';
 import '../presentation/quant/backtest_lab/backtest_lab_screen.dart';
 import '../presentation/quant/backtest_lab/backtest_run_detail_screen.dart';
+import '../presentation/quant/backtest_lab/portfolio_run_screen.dart';
 import '../presentation/quant/builder/builder_screen.dart';
 import '../presentation/quant/insights_tab/insights_screen.dart';
 import '../presentation/settings/settings_screen.dart';
@@ -99,6 +100,10 @@ final routerProvider = Provider<GoRouter>((ref) {
                     path: 'runs/:run_id',
                     builder: (_, state) =>
                         BacktestRunDetailScreen(runId: state.pathParameters['run_id']!),
+                  ),
+                  GoRoute(
+                    path: 'portfolio',
+                    builder: (_, __) => const PortfolioRunScreen(),
                   ),
                 ],
               ),

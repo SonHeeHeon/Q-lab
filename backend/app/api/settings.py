@@ -103,6 +103,8 @@ class AppSettingsResponse(BaseModel):
     llm_api_key_masked: str
     llm_cache_ttl_hours: int
     rating_strategy_name: str
+    etf_strategy_name: str
+    sleeve_etf_weight: float
     kospi200_universe: KOSPI200UniverseStatusResponse
     kosdaq150_universe: KOSPI200UniverseStatusResponse
 
@@ -135,6 +137,8 @@ async def get_settings(
         ),
         llm_cache_ttl_hours=int(rows.get("llm_cache_ttl_hours", settings.LLM_CACHE_TTL_HOURS)),
         rating_strategy_name=rows.get("rating_strategy_name") or settings.DEFAULT_STRATEGY_NAME,
+        etf_strategy_name=rows.get("etf_strategy_name") or settings.DEFAULT_ETF_STRATEGY_NAME,
+        sleeve_etf_weight=parse_sleeve_weight(rows.get("sleeve_etf_weight")),
         kospi200_universe=_kospi200_status(),
         kosdaq150_universe=_kosdaq150_status(),
     )
@@ -160,7 +164,22 @@ async def patch_settings(
         "toss_account_seq",
         "toss_is_mock",
         "rating_strategy_name",
+        "etf_strategy_name",
+        "sleeve_etf_weight",
     }
+    if "sleeve_etf_weight" in payload and payload["sleeve_etf_weight"] is not None:
+        try:
+            weight = float(payload["sleeve_etf_weight"])
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="sleeve_etf_weight는 0.0~1.0 사이의 숫자여야 합니다.",
+            ) from exc
+        if not 0.0 <= weight <= 1.0:
+            raise HTTPException(
+                status_code=400,
+                detail="sleeve_etf_weight는 0.0~1.0 사이의 숫자여야 합니다.",
+            )
     updates = {
         key: str(value)
         for key, value in payload.items()
@@ -388,6 +407,21 @@ async def refresh_kosdaq150_universe(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     response.status_code = _kospi200_refresh_status_code(result.source)
     return ApiEnvelope(data=_kosdaq150_refresh_response(result), error=None)
+
+
+def parse_sleeve_weight(raw: str | None) -> float:
+    """ETF 슬리브 비중 문자열을 파싱한다.
+
+    파싱 실패 시 settings.DEFAULT_SLEEVE_ETF_WEIGHT로 폴백하고, 유효 범위인
+    [0.0, 1.0]로 clamp한다. sleeve 오케스트레이터가 그대로 재사용할 수 있도록
+    공개 함수로 둔다.
+    """
+
+    try:
+        value = float(raw) if raw is not None else settings.DEFAULT_SLEEVE_ETF_WEIGHT
+    except (TypeError, ValueError):
+        value = settings.DEFAULT_SLEEVE_ETF_WEIGHT
+    return max(0.0, min(1.0, value))
 
 
 async def _settings_map(session: AsyncSession) -> dict[str, str]:

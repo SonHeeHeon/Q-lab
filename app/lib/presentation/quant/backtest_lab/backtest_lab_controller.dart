@@ -18,6 +18,12 @@ final runSortByProvider = StateProvider<RunSortBy>((ref) => RunSortBy.date);
 /// `BacktestLabScreen` renders — no refetch.
 final runModelFilterProvider = StateProvider<String?>((ref) => null);
 
+/// "세후 수익률(KR)" preference for the next backtest run — read by
+/// `BacktestApi.runBacktest(..., afterTax: ...)` at whichever call site
+/// submits the run form. Defaults to off (pre-tax), matching the backend's
+/// own `after_tax: bool = False` default.
+final afterTaxProvider = StateProvider<bool>((ref) => false);
+
 /// Parses the human-readable execution timestamp out of a `run_id` of the
 /// form `YYYYMMDD_HHMMSS_<slug>` (the backend's backtest run-id
 /// convention). Returns `null` when the id doesn't match that shape so

@@ -264,10 +264,17 @@ async def _persist_trade_skeleton(
     # This is intentionally a submission-side skeleton. The order tracker updates
     # it with broker fill state, actual price, fees, taxes, and fill timestamp.
     try:
-        account_type = order.account_type or request.account_type
-        await _ensure_account_row(session, account_type)
+        if order.broker is BrokerType.KIS:
+            account_type = order.account_type or request.account_type
+        else:
+            # Toss has no KIS PAPER/REAL/ISA identity; leave it unset rather
+            # than mislabeling the trade as the KIS 모의(PAPER) account.
+            account_type = order.account_type
+        if account_type is not None:
+            await _ensure_account_row(session, account_type)
         trade = Trade(
-            account_type=account_type.value,
+            account_type=account_type.value if account_type is not None else None,
+            broker=order.broker.value,
             stock_code=order.stock_code,
             direction=order.direction.value,
             quantity=order.quantity,

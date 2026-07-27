@@ -31,7 +31,11 @@ from backend.app.schemas.portfolio import (
     OrderRequest,
     OrderType,
 )
-from backend.app.services.batch.proposal_generator import run_proposal_generation
+from backend.app.services.batch.proposal_generator import (
+    run_proposal_generation,
+    run_sleeve_proposals,
+)
+from backend.app.services.batch.us_advisory import generate_us_advisory
 from backend.app.services.kis.rest_client import KISRestClient, KISRestError
 from backend.app.services.orders.guard import (
     OrderBlocked,
@@ -135,13 +139,41 @@ async def list_proposals(
 async def generate_proposals(
     payload: GenerateRequest,
 ) -> ApiEnvelope[dict[str, Any]]:
-    """수동 트리거 — 배치와 동일한 생성 로직 실행."""
-    summary = await run_proposal_generation(
-        strategy_name=payload.strategy_name,
-        full_rebalance=payload.full_rebalance,
-        send_telegram=payload.send_telegram,
-    )
+    """수동 트리거 — 배치와 동일한 생성 로직 실행.
+
+    strategy_name이 없으면 2-슬리브 오케스트레이터(run_sleeve_proposals)를,
+    명시되면 (내부적으로 슬리브 스코핑이 적용된) 단일 run_proposal_generation을
+    실행한다.
+    """
+    if payload.strategy_name is None:
+        summary = await run_sleeve_proposals(send_telegram=payload.send_telegram)
+    else:
+        summary = await run_proposal_generation(
+            strategy_name=payload.strategy_name,
+            full_rebalance=payload.full_rebalance,
+            send_telegram=payload.send_telegram,
+        )
     return ApiEnvelope(data=summary, error=None)
+
+
+@router.get("/us-advisory", response_model=ApiEnvelope[dict[str, Any]])
+async def us_advisory(
+    strategy: str = Query(default="us_stock_v1"),
+    top_n: int | None = Query(default=None),
+) -> ApiEnvelope[dict[str, Any]]:
+    """US 자문 슬리브(실주문 없음) — US 퀀트 방정식으로 US_LARGE를 랭킹해
+    Toss 보유 대비 BUY/SELL/HOLD 자문을 반환한다. OrderProposal을 만들지 않아
+    승인/실행 파이프라인과 완전히 분리된다."""
+    try:
+        result = await generate_us_advisory(strategy, top_n=top_n)
+    except FileNotFoundError:
+        # 튜닝판(us_value 등)은 private/ 전용 — 오픈소스 클론에는 없다.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"전략 파일 없음: {strategy} (튜닝판은 private/ 전용, "
+            f"공개 기본은 us_stock_v1)",
+        )
+    return ApiEnvelope(data=result, error=None)
 
 
 @router.post("/{proposal_id}/reject", response_model=ApiEnvelope[ProposalResponse])

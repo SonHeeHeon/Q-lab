@@ -28,7 +28,8 @@ class PrincipleLiteResponse(BaseModel):
 
 class TradeLiteResponse(BaseModel):
     id: int
-    account_type: str
+    account_type: str | None
+    broker: str
     stock_code: str
     direction: str
     quantity: int
@@ -252,6 +253,7 @@ def _trade_response(trade: Trade) -> TradeLiteResponse:
     return TradeLiteResponse(
         id=trade.id,
         account_type=trade.account_type,
+        broker=trade.broker,
         stock_code=trade.stock_code,
         direction=trade.direction,
         quantity=trade.quantity,

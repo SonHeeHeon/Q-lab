@@ -17,6 +17,7 @@ import '../../domain/entities/proposal.dart';
 import '../../shared/widgets/empty_state.dart';
 import '../../shared/widgets/reason_chip.dart';
 import 'proposals_controller.dart';
+import 'us_advisory_screen.dart';
 
 final _krw = NumberFormat('#,##0');
 final _dateTime = DateFormat('MM-dd HH:mm');
@@ -127,6 +128,15 @@ class _ProposalsScreenState extends ConsumerState<ProposalsScreen> {
       appBar: AppBar(
         title: const Text('오늘의 제안'),
         actions: [
+          TextButton.icon(
+            icon: const Text('🇺🇸', style: TextStyle(fontSize: 16)),
+            label: const Text('US 자문'),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const UsAdvisoryScreen(),
+              ),
+            ),
+          ),
           IconButton(
             tooltip: '새로고침',
             icon: const Icon(Icons.refresh),
@@ -229,6 +239,32 @@ class _FilterBar extends ConsumerWidget {
   }
 }
 
+/// Compact "예상 세금" line for a SELL proposal, derived from the tax
+/// estimate the backend stamps onto `reason` post-build (batch/
+/// proposal_generator.py `run_proposal_generation`): `tax_type` /
+/// `est_sell_tax` / `est_gains_tax` / `tax_note`.
+///
+/// Returns `null` (render nothing) when `tax_type` is missing/unrecognized
+/// (BUY proposals, older persisted proposals predating this contract) or
+/// when the estimated total is 0 or less — this naturally covers the
+/// 비과세 국내주식형 ETF case (always 0) without a special branch.
+String? taxLineFor(Map<String, dynamic> reason) {
+  final label = switch (reason['tax_type']) {
+    'stock' => '거래세',
+    'etf_taxable' => '배당소득세 15.4%',
+    'etf_domestic_equity' => '비과세',
+    _ => null,
+  };
+  if (label == null) return null;
+
+  final sellTax = (reason['est_sell_tax'] as num?)?.toDouble() ?? 0;
+  final gainsTax = (reason['est_gains_tax'] as num?)?.toDouble() ?? 0;
+  final total = sellTax + gainsTax;
+  if (total <= 0) return null;
+
+  return '예상 세금 ~₩${_krw.format(total.round())} ($label)';
+}
+
 class _ProposalCard extends StatelessWidget {
   const _ProposalCard({
     required this.proposal,
@@ -248,6 +284,7 @@ class _ProposalCard extends StatelessWidget {
     final p = proposal;
     final sideColor = p.isBuy ? _buyColor : _sellColor;
     final actionable = p.status.isActionable;
+    final taxLine = p.isBuy ? null : taxLineFor(p.reason);
 
     return Card(
       margin: const EdgeInsets.only(bottom: 10),
@@ -289,6 +326,14 @@ class _ProposalCard extends StatelessWidget {
                           ?.copyWith(color: theme.colorScheme.outline)),
               ],
             ),
+            if (taxLine != null) ...[
+              const SizedBox(height: 4),
+              Text(
+                taxLine,
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.outline),
+              ),
+            ],
             if (actionable) ...[
               const SizedBox(height: 12),
               Row(

@@ -55,6 +55,7 @@ class StrategyDefinition(BaseModel):
         "KOSPI_ALL",
         "KOSDAQ_ALL",
         "NASDAQ100",
+        "US_LARGE",
         "ETF_KR",
         "ETF_US",
         "CUSTOM",
@@ -96,3 +97,13 @@ class StrategyDefinition(BaseModel):
     # close: stop_loss_pct (e.g. -0.10) and/or take_profit_pct (e.g. 0.30).
     stop_loss_pct: float | None = None
     take_profit_pct: float | None = None
+
+    # --- Absolute-momentum gate (Phase 4.4 E4). OFF by default — every
+    # existing strategy/backtest is unchanged when this stays False. ---
+    # When true, after ranking, any top_n candidate whose own
+    # ``abs_momentum_factor`` value is not strictly positive is dropped from
+    # the selection. Dropped slots are left as cash (not redistributed to
+    # the survivors) — see engine._allocate_equal_weight's fixed `slots`
+    # divisor.
+    abs_momentum_gate: bool = False
+    abs_momentum_factor: str = "MOMENTUM_12M"

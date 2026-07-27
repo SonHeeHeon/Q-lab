@@ -21,6 +21,11 @@ import 'trade_journal_controller.dart';
 final _dateTime = DateFormat('MM-dd HH:mm');
 final _krw = NumberFormat('#,##0');
 
+/// Toss brand teal — matches the same color used on the portfolio screen
+/// and stock detail's broker chip, so a Toss trade reads consistently
+/// across the app.
+const _tossColor = Color(0xFF3182F6);
+
 class TradeJournalScreen extends ConsumerWidget {
   const TradeJournalScreen({super.key});
 
@@ -68,11 +73,12 @@ class TradeJournalScreen extends ConsumerWidget {
 }
 
 // ---------------------------------------------------------------------------
-// Account filter bar — 전체 / 모의 / 실전 / ISA (mirrors portfolio's
-// _BrokerFilterBar). Filters both tabs client-side; the journal only ever
-// contains KIS trades (Toss executions aren't recorded), so there's no
-// Toss option here.
+// Account filter bar — 전체 / 모의 / 실전 / ISA / 토스 (mirrors portfolio's
+// _BrokerFilterBar). Filters both tabs client-side; Toss trades (no KIS
+// account split) are matched by broker alone via the 토스 chip.
 // ---------------------------------------------------------------------------
+
+const _kisFilters = [JournalFilter.paper, JournalFilter.real, JournalFilter.isa];
 
 class _AccountFilterBar extends ConsumerWidget {
   const _AccountFilterBar();
@@ -93,30 +99,40 @@ class _AccountFilterBar extends ConsumerWidget {
               children: [
                 ChoiceChip(
                   label: const Text('전체'),
-                  selected: selected == null,
+                  selected: selected == JournalFilter.all,
                   onSelected: (_) =>
-                      ref.read(journalAccountFilterProvider.notifier).state = null,
+                      ref.read(journalAccountFilterProvider.notifier).state =
+                          JournalFilter.all,
                 ),
-                for (final acc in KisAccount.values) ...[
+                for (final f in _kisFilters) ...[
                   const SizedBox(width: 8),
                   ChoiceChip(
                     avatar: CircleAvatar(
-                      backgroundColor: _accountColor(context, acc),
+                      backgroundColor: _accountColor(context, f.kisAccount!),
                       radius: 8,
                     ),
-                    label: Text(acc.label),
-                    selected: selected == acc,
+                    label: Text(f.label),
+                    selected: selected == f,
                     onSelected: (_) =>
-                        ref.read(journalAccountFilterProvider.notifier).state = acc,
+                        ref.read(journalAccountFilterProvider.notifier).state = f,
                   ),
                 ],
+                const SizedBox(width: 8),
+                ChoiceChip(
+                  avatar: const CircleAvatar(backgroundColor: _tossColor, radius: 8),
+                  label: Text(JournalFilter.toss.label),
+                  selected: selected == JournalFilter.toss,
+                  onSelected: (_) =>
+                      ref.read(journalAccountFilterProvider.notifier).state =
+                          JournalFilter.toss,
+                ),
               ],
             ),
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
             child: Text(
-              'KIS 체결 거래만 기록됩니다 (토스 체결은 매매일지 대상이 아니에요)',
+              'KIS·토스 체결 거래가 모두 기록됩니다',
               style: theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.outline),
             ),
           ),
@@ -137,16 +153,19 @@ Color _accountColor(BuildContext context, KisAccount account) {
   };
 }
 
-/// Small colored account badge shown on each trade/journal row —
-/// replaces the plain "· PAPER" text suffix for at-a-glance scanning.
+/// Small colored account badge shown on each trade/journal row — replaces
+/// the plain "· PAPER" text suffix for at-a-glance scanning. Toss trades
+/// carry no KIS account_type (null), so they render a 토스 badge instead.
 class _AccountBadge extends StatelessWidget {
-  const _AccountBadge({required this.accountType});
-  final String accountType;
+  const _AccountBadge({required this.broker, required this.accountType});
+  final String broker;
+  final String? accountType;
 
   @override
   Widget build(BuildContext context) {
-    final acc = KisAccount.fromWire(accountType);
-    final c = _accountColor(context, acc);
+    final isToss = broker.toUpperCase() == 'TOSS';
+    final label = isToss ? '토스' : KisAccount.fromWire(accountType ?? '').label;
+    final c = isToss ? _tossColor : _accountColor(context, KisAccount.fromWire(accountType ?? ''));
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
@@ -154,7 +173,7 @@ class _AccountBadge extends StatelessWidget {
         borderRadius: BorderRadius.circular(4),
       ),
       child: Text(
-        acc.label,
+        label,
         style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: c),
       ),
     );
@@ -173,10 +192,11 @@ class _MissingTab extends ConsumerWidget {
     final filter = ref.watch(journalAccountFilterProvider);
     return async.when(
       data: (trades) {
-        final filtered =
-            trades.where((t) => matchesAccountFilter(t.accountType, filter)).toList();
+        final filtered = trades
+            .where((t) => matchesAccountFilter(t.broker, t.accountType, filter))
+            .toList();
         if (filtered.isEmpty) {
-          final filteredOut = filter != null && trades.isNotEmpty;
+          final filteredOut = filter != JournalFilter.all && trades.isNotEmpty;
           return EmptyState(
             icon: Icons.check_circle_outline,
             title: filteredOut ? '${filter.label} 계좌: 미작성 거래 없음' : '모두 복기 완료!',
@@ -219,7 +239,7 @@ class _MissingRow extends ConsumerWidget {
           Text(trade.stockCode,
               style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
           const SizedBox(width: 6),
-          _AccountBadge(accountType: trade.accountType),
+          _AccountBadge(broker: trade.broker, accountType: trade.accountType),
         ],
       ),
       subtitle: Text(
@@ -310,10 +330,10 @@ class _AllTab extends ConsumerWidget {
     return async.when(
       data: (list) {
         final filtered = list
-            .where((j) => matchesAccountFilter(j.trade.accountType, filter))
+            .where((j) => matchesAccountFilter(j.trade.broker, j.trade.accountType, filter))
             .toList();
         if (filtered.isEmpty) {
-          final filteredOut = filter != null && list.isNotEmpty;
+          final filteredOut = filter != JournalFilter.all && list.isNotEmpty;
           return EmptyState(
             icon: Icons.menu_book_outlined,
             title: filteredOut ? '${filter.label} 계좌 일지가 없습니다' : '아직 저장된 매매일지가 없습니다',
@@ -359,7 +379,7 @@ class _JournalRow extends ConsumerWidget {
           Text(t.stockCode,
               style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
           const SizedBox(width: 6),
-          _AccountBadge(accountType: t.accountType),
+          _AccountBadge(broker: t.broker, accountType: t.accountType),
           const SizedBox(width: 6),
           Flexible(
             child: Text(

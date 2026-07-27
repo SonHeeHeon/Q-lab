@@ -1045,6 +1045,24 @@ class _RatingsSettingsBlock extends ConsumerStatefulWidget {
 
 class _RatingsSettingsBlockState extends ConsumerState<_RatingsSettingsBlock> {
   bool _saving = false;
+  bool _savingEtf = false;
+  bool _savingSleeve = false;
+
+  // Local draft for the sleeve slider — the Slider needs a value that moves
+  // smoothly while dragging (onChanged, no network call), and only persists
+  // on release (onChangeEnd). `_dragging` guards against an in-flight
+  // external settings refresh (e.g. the appbar refresh button) snapping the
+  // thumb back mid-drag.
+  late double _draftWeight = widget.settings.sleeveEtfWeight;
+  bool _dragging = false;
+
+  @override
+  void didUpdateWidget(covariant _RatingsSettingsBlock oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!_dragging && widget.settings.sleeveEtfWeight != oldWidget.settings.sleeveEtfWeight) {
+      setState(() => _draftWeight = widget.settings.sleeveEtfWeight);
+    }
+  }
 
   Future<void> _onStrategyChanged(String? name) async {
     if (name == null || name == widget.settings.ratingStrategyName) return;
@@ -1068,12 +1086,67 @@ class _RatingsSettingsBlockState extends ConsumerState<_RatingsSettingsBlock> {
     }
   }
 
+  Future<void> _onEtfStrategyChanged(String? name) async {
+    if (name == null || name == widget.settings.etfStrategyName) return;
+    setState(() => _savingEtf = true);
+    try {
+      await ref.read(settingsApiProvider).patch({'etf_strategy_name': name});
+      ref.invalidate(appSettingsProvider);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('ETF 슬리브 전략 저장 완료: $name')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('저장 실패: $e'), backgroundColor: Colors.redAccent),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _savingEtf = false);
+    }
+  }
+
+  Future<void> _onSleeveWeightChangeEnd(double value) async {
+    setState(() => _dragging = false);
+    // Divisions already quantize to 0.05 steps, but guard against float
+    // drift and skip the round-trip entirely when nothing actually moved.
+    final rounded = double.parse(value.toStringAsFixed(2));
+    if ((rounded - widget.settings.sleeveEtfWeight).abs() < 1e-9) return;
+
+    setState(() => _savingSleeve = true);
+    try {
+      await ref.read(settingsApiProvider).patch({'sleeve_etf_weight': rounded});
+      ref.invalidate(appSettingsProvider);
+      if (mounted) {
+        final (etfPct, _) = sleeveWeightPct(rounded);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('슬리브 비중 저장 완료: ETF $etfPct%')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        // Parse/save error → revert the slider to the last known-good
+        // server value rather than leaving an unsaved draft on screen.
+        setState(() => _draftWeight = widget.settings.sleeveEtfWeight);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('저장 실패: $e'), backgroundColor: Colors.redAccent),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _savingSleeve = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final presetsAsync = ref.watch(strategyPresetsProvider);
     final statusAsync = ref.watch(_ratingsStatusProvider);
     final currentName = widget.settings.ratingStrategyName;
+    final currentEtfName = widget.settings.etfStrategyName;
+    final (etfPct, stockPct) = sleeveWeightPct(_draftWeight);
 
     return Card(
       child: Padding(
@@ -1147,6 +1220,79 @@ class _RatingsSettingsBlockState extends ConsumerState<_RatingsSettingsBlock> {
                 style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.error),
               ),
             ),
+            const Divider(height: 24),
+            Text('슬리브 배분 (주식 / ETF)',
+                style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
+            const SizedBox(height: 4),
+            Text(
+              '계좌 NAV를 주식/ETF 슬리브로 나눠 각 전략이 자기 몫만 운용합니다. '
+              'ETF 리밸런스는 매월 첫 거래일.',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            presetsAsync.when(
+              data: (presets) {
+                final private = presets.where((p) => p.isPrivate).toList();
+                final public = presets.where((p) => !p.isPrivate).toList();
+                final ordered = [...private, ...public];
+                final names = ordered.map((p) => p.name).toSet();
+                return DropdownButtonFormField<String>(
+                  initialValue: currentEtfName,
+                  isDense: true,
+                  decoration: const InputDecoration(labelText: 'ETF 슬리브 전략', isDense: true),
+                  items: [
+                    for (final p in ordered)
+                      DropdownMenuItem<String>(
+                        value: p.name,
+                        child: Text(
+                          '${p.isGrouped ? '📐' : '🧮'} ${p.name}${p.isPrivate ? ' 🔒' : ''}',
+                          style: const TextStyle(fontSize: 13),
+                        ),
+                      ),
+                    if (currentEtfName.isNotEmpty && !names.contains(currentEtfName))
+                      DropdownMenuItem<String>(
+                        value: currentEtfName,
+                        child: Text('$currentEtfName (목록에 없음)',
+                            style: const TextStyle(fontSize: 13)),
+                      ),
+                  ],
+                  onChanged: _savingEtf ? null : _onEtfStrategyChanged,
+                );
+              },
+              loading: () => const Padding(
+                padding: EdgeInsets.symmetric(vertical: 12),
+                child: LinearProgressIndicator(),
+              ),
+              error: (e, _) => Text(
+                '프리셋 목록을 불러오지 못했습니다: $e',
+                style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.error),
+              ),
+            ),
+            if (_savingEtf) ...[
+              const SizedBox(height: 8),
+              Text('저장 중...',
+                  style: theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.outline)),
+            ],
+            const SizedBox(height: 16),
+            Text('ETF 슬리브 비중: $etfPct%',
+                style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600)),
+            Slider(
+              value: _draftWeight,
+              min: 0,
+              max: 1,
+              divisions: 20,
+              label: '$etfPct%',
+              onChangeStart: (_) => setState(() => _dragging = true),
+              onChanged: (v) => setState(() => _draftWeight = v),
+              onChangeEnd: _onSleeveWeightChangeEnd,
+            ),
+            Text('주식 = $stockPct%',
+                style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline)),
+            if (_savingSleeve) ...[
+              const SizedBox(height: 4),
+              Text('저장 중...',
+                  style: theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.outline)),
+            ],
           ],
         ),
       ),

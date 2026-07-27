@@ -1,0 +1,33 @@
+# KR ETF tax classification (manual, verified). tax_class: domestic_equity | taxable
+# domestic_equity = 국내주식형 ETF (매매차익 비과세)
+# taxable         = 기타/해외/채권/파생 ETF (매매차익 배당소득세 15.4%)
+code,tax_class,name
+069500,domestic_equity,KODEX 200
+091160,domestic_equity,KODEX 반도체
+229200,domestic_equity,KODEX 코스닥150
+114260,taxable,KODEX 국고채3년
+148070,taxable,KOSEF 국고채10년
+114800,taxable,KODEX 인버스
+132030,taxable,KODEX 골드선물(H)
+133690,taxable,TIGER 미국나스닥100
+143850,taxable,TIGER 미국S&P500선물(H)
+261240,taxable,KODEX 미국달러선물
+091170,domestic_equity,KODEX 은행
+091180,domestic_equity,KODEX 자동차
+305720,domestic_equity,KODEX 2차전지산업
+266420,domestic_equity,KODEX 헬스케어
+279530,domestic_equity,KODEX 고배당
+360750,taxable,TIGER 미국S&P500
+381180,taxable,TIGER 미국필라델피아반도체나스닥
+192090,taxable,TIGER 차이나CSI300
+251350,taxable,KODEX 선진국MSCI World
+195980,taxable,ARIRANG 신흥국MSCI
+245710,taxable,KINDEX 베트남VN30
+144600,taxable,KODEX 은선물(H)
+130680,taxable,TIGER 원유선물Enhanced(H)
+153130,taxable,KODEX 단기채권
+273130,taxable,KODEX 종합채권(AA-이상)액티브
+305080,taxable,TIGER 미국채10년선물
+329200,taxable,TIGER 리츠부동산인프라
+458730,taxable,TIGER 미국배당다우존스
+329750,taxable,TIGER 미국달러단기채권액티브

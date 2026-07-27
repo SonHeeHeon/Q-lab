@@ -70,6 +70,8 @@ class BacktestLabScreen extends ConsumerWidget {
           return Column(
             children: [
               const _EquationBuilderBanner(),
+              const _PortfolioBacktestBanner(),
+              const _AfterTaxToggle(),
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
                 child: Row(
@@ -298,6 +300,86 @@ class _EquationBuilderBanner extends StatelessWidget {
             Icon(Icons.chevron_right, color: theme.colorScheme.onPrimaryContainer),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Entry point for the multi-sleeve portfolio backtest (T-P3) — mirrors
+/// [_EquationBuilderBanner]'s look (rounded tinted container, icon +
+/// title + subtitle + chevron) but on `secondaryContainer` so the two
+/// banners read as siblings, not duplicates.
+class _PortfolioBacktestBanner extends StatelessWidget {
+  const _PortfolioBacktestBanner();
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return InkWell(
+      onTap: () => context.go('/quant/backtest/portfolio'),
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        margin: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.secondaryContainer,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.stacked_bar_chart_rounded, color: theme.colorScheme.onSecondaryContainer),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('🧩 포트폴리오 백테스트',
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        color: theme.colorScheme.onSecondaryContainer,
+                        fontWeight: FontWeight.w700,
+                      )),
+                  Text('여러 전략을 섞어 블렌드 성과 확인 → 최적 비중 탐색',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSecondaryContainer,
+                      )),
+                ],
+              ),
+            ),
+            Icon(Icons.chevron_right, color: theme.colorScheme.onSecondaryContainer),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// "세후 수익률(KR)" toggle for the next backtest run (two-sleeve tax
+/// rollout, T9). Persists to [afterTaxProvider] so whichever screen submits
+/// the run form (Equation Builder) can read it — a compact switch rather
+/// than a full settings block since it's a per-run preference, not
+/// account-level config.
+class _AfterTaxToggle extends ConsumerWidget {
+  const _AfterTaxToggle();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final enabled = ref.watch(afterTaxProvider);
+    return Card(
+      margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+      child: SwitchListTile(
+        dense: true,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+        secondary: Icon(
+          Icons.receipt_long_outlined,
+          color: enabled ? theme.colorScheme.primary : theme.colorScheme.outline,
+        ),
+        title: const Text('세후 수익률(KR)'),
+        subtitle: const Text(
+          '거래세+과세 ETF 매매차익 15.4% 반영 (배당 제외)',
+          style: TextStyle(fontSize: 11),
+        ),
+        value: enabled,
+        onChanged: (v) => ref.read(afterTaxProvider.notifier).state = v,
       ),
     );
   }

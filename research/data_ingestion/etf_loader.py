@@ -55,6 +55,33 @@ US_CORE_ETFS: dict[str, str] = {
     "GLD": "SPDR Gold Shares",
     "DBC": "Invesco DB Commodity",
     "VNQ": "Vanguard Real Estate",
+    # 광범위 대형주
+    "VOO": "Vanguard S&P 500",
+    "VTI": "Vanguard Total US Market",
+    "DIA": "SPDR Dow Jones",
+    # 섹터 SPDR (XLRE는 VNQ와 겹쳐 제외)
+    "XLK": "Technology Select Sector",
+    "XLF": "Financial Select Sector",
+    "XLE": "Energy Select Sector",
+    "XLV": "Health Care Select Sector",
+    "XLI": "Industrial Select Sector",
+    "XLP": "Consumer Staples Select Sector",
+    "XLY": "Consumer Discretionary Select Sector",
+    "XLU": "Utilities Select Sector",
+    "XLB": "Materials Select Sector",
+    "XLC": "Communication Services Select Sector",
+    # 팩터/스타일
+    "SCHD": "Schwab US Dividend Equity",
+    "VIG": "Vanguard Dividend Appreciation",
+    "MTUM": "iShares MSCI USA Momentum",
+    "QUAL": "iShares MSCI USA Quality",
+    "VTV": "Vanguard Value",
+    "VUG": "Vanguard Growth",
+    # 채권
+    "AGG": "iShares Core US Aggregate Bond",
+    "LQD": "iShares IG Corporate Bond",
+    "HYG": "iShares High Yield Corporate",
+    "SHY": "iShares 1-3 Year Treasury",
 }
 
 
@@ -127,20 +154,16 @@ async def update_us_etf_prices(
     """Download US ETF closes into prices_daily_us (+ stocks_us exchange='ETF')."""
 
     etfs = tickers or US_CORE_ETFS
-    frame = await asyncio.to_thread(_download_yf_closes, list(etfs), start, end)
+    close_f, adj_f = await asyncio.to_thread(_download_yf_prices, list(etfs), start, end)
     total = 0
     with sqlite3.connect(research_db_path) as conn:
         _ensure_us_dedup_indexes(conn)
         for ticker, name in etfs.items():
-            if ticker not in frame.columns:
+            if ticker not in close_f.columns:
                 continue
-            rows = _us_price_rows(ticker, frame[ticker])
-            conn.executemany(
-                "INSERT OR IGNORE INTO prices_daily_us"
-                " (ticker, date, open, high, low, close, volume, adj_close, currency)"
-                " VALUES (?,?,?,?,?,?,?,?,?)",
-                rows,
-            )
+            adj_series = adj_f[ticker] if ticker in adj_f.columns else close_f[ticker]
+            rows = _us_price_rows(ticker, close_f[ticker], adj_series)
+            conn.executemany(_UPSERT_US_PRICE, rows)
             conn.execute(
                 "INSERT OR IGNORE INTO stocks_us"
                 " (ticker, name, exchange, sector, industry, currency,"
@@ -164,7 +187,13 @@ async def update_us_etf_prices(
     )
 
 
-def _download_yf_closes(tickers: list[str], start: date, end: date) -> pd.DataFrame:
+def _download_yf_prices(
+    tickers: list[str], start: date, end: date
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Return (close, adj_close) frames keyed by ticker. adj_close carries the
+    dividend+split adjustment — dropping it (the old code stored raw close as
+    both) understates total return badly for distribution-heavy ETFs (TLT/AGG/
+    SCHD), which is exactly what momentum/absolute-momentum gates read."""
     import warnings
 
     import yfinance as yf
@@ -177,21 +206,24 @@ def _download_yf_closes(tickers: list[str], start: date, end: date) -> pd.DataFr
         progress=False,
         auto_adjust=False,
     )
-    close = data["Close"] if isinstance(data.columns, pd.MultiIndex) else data[["Close"]]
-    if not isinstance(data.columns, pd.MultiIndex):
-        close = close.rename(columns={"Close": tickers[0]})
-    return close
+    if isinstance(data.columns, pd.MultiIndex):
+        return data["Close"], data["Adj Close"]
+    close = data[["Close"]].rename(columns={"Close": tickers[0]})
+    adj = data[["Adj Close"]].rename(columns={"Adj Close": tickers[0]})
+    return close, adj
 
 
-def _us_price_rows(ticker: str, close: pd.Series) -> list[tuple]:
+def _us_price_rows(ticker: str, close: pd.Series, adj: pd.Series) -> list[tuple]:
     rows: list[tuple] = []
     for idx, value in close.items():
         if value is None or pd.isna(value) or float(value) <= 0:
             continue
         day = idx.date().isoformat() if hasattr(idx, "date") else str(idx)[:10]
         price = round(float(value), 6)
+        adj_value = adj.get(idx)
+        adj_price = round(float(adj_value), 6) if adj_value is not None and not pd.isna(adj_value) else price
         # OHLC beyond close isn't needed by the engine (it reads close only).
-        rows.append((ticker, day, price, price, price, price, 0, price, "USD"))
+        rows.append((ticker, day, price, price, price, price, 0, adj_price, "USD"))
     return rows
 
 
@@ -213,22 +245,30 @@ async def update_us_prices_incremental(*, start: date, end: date) -> LoadResult:
     if not tickers:
         return LoadResult(name="us_prices", requested=0, inserted_or_ignored=0)
 
-    frame = await asyncio.to_thread(_download_yf_closes, tickers, start, end)
+    close_f, adj_f = await asyncio.to_thread(_download_yf_prices, tickers, start, end)
     total = 0
     with sqlite3.connect(research_db_path) as conn:
         for ticker in tickers:
-            if ticker not in frame.columns:
+            if ticker not in close_f.columns:
                 continue
-            rows = _us_price_rows(ticker, frame[ticker])
-            conn.executemany(
-                "INSERT OR IGNORE INTO prices_daily_us"
-                " (ticker, date, open, high, low, close, volume, adj_close, currency)"
-                " VALUES (?,?,?,?,?,?,?,?,?)",
-                rows,
-            )
+            adj_series = adj_f[ticker] if ticker in adj_f.columns else close_f[ticker]
+            rows = _us_price_rows(ticker, close_f[ticker], adj_series)
+            conn.executemany(_UPSERT_US_PRICE, rows)
             total += len(rows)
         conn.commit()
     return LoadResult(name="us_prices", requested=total, inserted_or_ignored=total)
+
+
+# UPSERT (not INSERT OR IGNORE) so re-running re-adjusts historical adj_close
+# after a new split/dividend — IGNORE would freeze stale adjustments forever.
+_UPSERT_US_PRICE = (
+    "INSERT INTO prices_daily_us"
+    " (ticker, date, open, high, low, close, volume, adj_close, currency)"
+    " VALUES (?,?,?,?,?,?,?,?,?)"
+    " ON CONFLICT(ticker, date) DO UPDATE SET"
+    "   open=excluded.open, high=excluded.high, low=excluded.low, close=excluded.close,"
+    "   volume=excluded.volume, adj_close=excluded.adj_close, currency=excluded.currency"
+)
 
 
 def _ensure_us_dedup_indexes(conn: sqlite3.Connection) -> None:

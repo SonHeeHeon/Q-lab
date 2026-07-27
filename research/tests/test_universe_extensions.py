@@ -63,6 +63,8 @@ def db(tmp_path: Path) -> Path:
             [
                 ("SPY", "SPDR S&P500", "ETF", "USD", "1993-01-29"),
                 ("AAPL", "Apple", "NASDAQ", "USD", "1980-12-12"),
+                ("JPM", "JPMorgan", "SP500", "USD", "1980-03-17"),
+                ("ABNB", "Airbnb", "SP500", "USD", "2020-12-10"),  # post-IPO
             ],
         )
         conn.execute(
@@ -86,6 +88,18 @@ def test_etf_kr_universe(db: Path) -> None:
 
 def test_etf_us_universe(db: Path) -> None:
     assert get_universe("ETF_US", as_of=AS_OF, db_path=db) == ["SPY"]
+
+
+def test_us_large_unions_nasdaq_and_sp500_excludes_etf(db: Path) -> None:
+    # NASDAQ (AAPL) ∪ SP500 (JPM, ABNB); ETF (SPY) excluded.
+    assert set(get_universe("US_LARGE", as_of=AS_OF, db_path=db)) == {"AAPL", "JPM", "ABNB"}
+
+
+def test_us_large_point_in_time_listing_excludes_pre_ipo(db: Path) -> None:
+    # ABNB listed 2020-12-10 → absent from a 2015 universe.
+    codes = get_universe("US_LARGE", as_of=date(2015, 1, 2), db_path=db)
+    assert set(codes) == {"AAPL", "JPM"}
+    assert "ABNB" not in codes
 
 
 def test_kospi_top100_membership_point_in_time(db: Path) -> None:

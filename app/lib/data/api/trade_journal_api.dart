@@ -12,7 +12,8 @@ import 'api_client.dart';
 class TradeLite {
   TradeLite({
     required this.id,
-    required this.accountType,
+    this.accountType,
+    this.broker = 'KIS',
     required this.stockCode,
     required this.direction,
     required this.quantity,
@@ -22,7 +23,14 @@ class TradeLite {
   });
 
   final int id;
-  final String accountType;
+
+  /// Null for Toss trades (Toss has no KIS-style PAPER/REAL/ISA account
+  /// split) — non-null for KIS trades ("PAPER" | "REAL" | "ISA").
+  final String? accountType;
+
+  /// "KIS" | "TOSS". Defaults to "KIS" when absent for backward-compat with
+  /// older cached responses.
+  final String broker;
   final String stockCode;
   final String direction; // BUY | SELL
   final int quantity;
@@ -32,7 +40,8 @@ class TradeLite {
 
   factory TradeLite.fromJson(Map<String, dynamic> j) => TradeLite(
         id: (j['id'] as num).toInt(),
-        accountType: j['account_type'] as String,
+        accountType: j['account_type'] as String?,
+        broker: (j['broker'] as String?) ?? 'KIS',
         stockCode: j['stock_code'] as String,
         direction: j['direction'] as String,
         quantity: (j['quantity'] as num).toInt(),

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import ssl
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping
@@ -33,6 +33,33 @@ STOCKS_PATH = "/api/v1/stocks"
 ORDERS_PATH = "/api/v1/orders"
 EXCHANGE_RATE_PATH = "/api/v1/exchange-rate"
 BUYING_POWER_PATH = "/api/v1/buying-power"
+
+# Order.status values (per docs/toss_openapi.json components.schemas.OrderStatus).
+# NOTE: these are *order-level* statuses, distinct from the `status` query
+# parameter accepted by GET /api/v1/orders, which only takes the lifecycle
+# *group* filter "OPEN" or "CLOSED" (see list_orders() below).
+ORDER_STATUS_PENDING = "PENDING"
+ORDER_STATUS_PENDING_CANCEL = "PENDING_CANCEL"
+ORDER_STATUS_PENDING_REPLACE = "PENDING_REPLACE"
+ORDER_STATUS_PARTIAL_FILLED = "PARTIAL_FILLED"
+ORDER_STATUS_FILLED = "FILLED"
+ORDER_STATUS_CANCELED = "CANCELED"
+ORDER_STATUS_REJECTED = "REJECTED"
+ORDER_STATUS_CANCEL_REJECTED = "CANCEL_REJECTED"
+ORDER_STATUS_REPLACE_REJECTED = "REPLACE_REJECTED"
+ORDER_STATUS_REPLACED = "REPLACED"
+
+TERMINAL_ORDER_STATUSES = frozenset(
+    {
+        ORDER_STATUS_FILLED,
+        ORDER_STATUS_CANCELED,
+        ORDER_STATUS_REJECTED,
+        ORDER_STATUS_REPLACED,
+        ORDER_STATUS_CANCEL_REJECTED,
+        ORDER_STATUS_REPLACE_REJECTED,
+    }
+)
+FILLED_ORDER_STATUSES = frozenset({ORDER_STATUS_FILLED, ORDER_STATUS_PARTIAL_FILLED})
 
 
 class TossRestError(RuntimeError):
@@ -73,6 +100,40 @@ class TossStockInfo:
     market: str | None
     currency: str | None
     raw: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class TossOrderExecution:
+    """Normalized row from GET /api/v1/orders or GET /api/v1/orders/{orderId}.
+
+    Analogous to KISOrderExecution (backend/app/services/kis/rest_client.py).
+    """
+
+    order_id: str
+    symbol: str | None
+    side: str | None  # "BUY" / "SELL"
+    status: str  # Order.status, e.g. FILLED / PARTIAL_FILLED / PENDING / CANCELED
+    order_quantity: Decimal | None
+    order_price: Decimal | None
+    filled_quantity: Decimal
+    avg_filled_price: Decimal | None
+    filled_amount: Decimal | None
+    commission: Decimal | None
+    tax: Decimal | None
+    filled_at: datetime | None
+    settlement_date: date | None
+    currency: str | None
+    ordered_at: datetime | None
+    canceled_at: datetime | None
+    raw: dict[str, Any]
+
+    @property
+    def is_terminal(self) -> bool:
+        return self.status in TERMINAL_ORDER_STATUSES
+
+    @property
+    def is_filled(self) -> bool:
+        return self.status in FILLED_ORDER_STATUSES and self.filled_quantity > 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -344,6 +405,88 @@ class TossRestClient:
             accepted_at=datetime.now().astimezone(),
             raw=result or payload,
         )
+
+    async def get_order(
+        self,
+        order_id: str,
+        *,
+        account_seq: int | str | None = None,
+    ) -> TossOrderExecution | None:
+        """Fetch one order's current status/execution (GET /api/v1/orders/{orderId})."""
+
+        resolved_account_seq = await self.resolve_account_seq(account_seq)
+        try:
+            payload = await self._request(
+                "GET",
+                f"{ORDERS_PATH}/{order_id}",
+                headers={"X-Tossinvest-Account": str(resolved_account_seq)},
+            )
+        except TossRestError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        result = _as_dict(payload.get("result"))
+        if not result:
+            return None
+        return _parse_order(result)
+
+    async def list_orders(
+        self,
+        *,
+        status: str,
+        symbol: str | None = None,
+        since: date | None = None,
+        until: date | None = None,
+        cursor: str | None = None,
+        limit: int | None = None,
+        account_seq: int | str | None = None,
+        max_pages: int = 20,
+    ) -> list[TossOrderExecution]:
+        """List orders (GET /api/v1/orders).
+
+        `status` is the lifecycle *group* filter required by the real API —
+        "OPEN" (PENDING/PARTIAL_FILLED/PENDING_CANCEL/PENDING_REPLACE) or
+        "CLOSED" (FILLED/CANCELED/REJECTED/REPLACED/...). It is NOT one of the
+        per-order OrderStatus values. As of docs/toss_openapi.json,
+        `status=CLOSED` currently returns `400 closed-not-supported` on the
+        live API; callers should treat that as a soft failure.
+
+        Paginates via `nextCursor`/`hasNext` up to `max_pages` (only relevant
+        for `status=CLOSED`; `OPEN` always returns the full result in one page).
+        """
+
+        resolved_account_seq = await self.resolve_account_seq(account_seq)
+        headers = {"X-Tossinvest-Account": str(resolved_account_seq)}
+        base_params: dict[str, Any] = {"status": status}
+        if symbol:
+            base_params["symbol"] = symbol
+        if since is not None:
+            base_params["from"] = since.isoformat()
+        if until is not None:
+            base_params["to"] = until.isoformat()
+        if limit is not None:
+            base_params["limit"] = limit
+
+        orders: list[TossOrderExecution] = []
+        next_cursor = cursor
+        for _ in range(max(1, max_pages)):
+            params = dict(base_params)
+            if next_cursor:
+                params["cursor"] = next_cursor
+            payload = await self._request(
+                "GET",
+                ORDERS_PATH,
+                headers=headers,
+                params=params,
+            )
+            result = _as_dict(payload.get("result"))
+            rows = _as_list(result.get("orders"))
+            orders.extend(_parse_order(row) for row in rows)
+            next_cursor = result.get("nextCursor")
+            has_next = bool(result.get("hasNext"))
+            if not has_next or not next_cursor:
+                break
+        return orders
 
     async def _access_token(self) -> str:
         if self._cached_token and self._cached_token.expires_at > datetime.now():
@@ -663,6 +806,36 @@ def _normalize_change_type(value: Any, rate: Decimal, mid_rate: Decimal) -> str:
     if rate < mid_rate:
         return "DOWN"
     return "EQUAL"
+
+
+def _parse_order(row: dict[str, Any]) -> TossOrderExecution:
+    execution = _as_dict(row.get("execution"))
+    settlement_date: date | None = None
+    settlement_raw = execution.get("settlementDate")
+    if settlement_raw:
+        try:
+            settlement_date = date.fromisoformat(str(settlement_raw))
+        except ValueError:
+            settlement_date = None
+    return TossOrderExecution(
+        order_id=str(row.get("orderId") or ""),
+        symbol=str(row.get("symbol") or "") or None,
+        side=str(row.get("side") or "") or None,
+        status=str(row.get("status") or ""),
+        order_quantity=_optional_decimal(row.get("quantity")),
+        order_price=_optional_decimal(row.get("price")),
+        filled_quantity=_decimal(execution.get("filledQuantity")),
+        avg_filled_price=_optional_decimal(execution.get("averageFilledPrice")),
+        filled_amount=_optional_decimal(execution.get("filledAmount")),
+        commission=_optional_decimal(execution.get("commission")),
+        tax=_optional_decimal(execution.get("tax")),
+        filled_at=_parse_datetime(execution.get("filledAt")),
+        settlement_date=settlement_date,
+        currency=str(row.get("currency") or "") or None,
+        ordered_at=_parse_datetime(row.get("orderedAt")),
+        canceled_at=_parse_datetime(row.get("canceledAt")),
+        raw=row,
+    )
 
 
 def _infer_currency(symbol: str) -> str:

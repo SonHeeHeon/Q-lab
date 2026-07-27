@@ -32,6 +32,9 @@ BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
 ORDER_CASH_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
 ORDER_EXECUTION_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
 QUOTE_PRICE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-price"
+ETF_COMPONENTS_PATH = (
+    "/uapi/domestic-stock/v1/quotations/inquire-etf-component-stock-price"
+)
 
 ORDER_STATUS_PENDING = "PENDING"
 ORDER_STATUS_PARTIALLY_FILLED = "PARTIALLY_FILLED"
@@ -232,6 +235,38 @@ class KISRestClient:
         )
         output = self._as_dict(payload.get("output"))
         return self._parse_current_price(normalized_code, output or payload)
+
+    async def get_etf_components(
+        self,
+        account_type: AccountType,
+        etf_code: str,
+    ) -> list[dict[str, Any]]:
+        """Fetch one domestic ETF's constituent holdings (구성종목) from KIS.
+
+        Uses TR ``FHKST121600C0`` (ETF/ETN 구성종목시세), a quotations
+        endpoint with no existing caller elsewhere in this repo. Because of
+        that, the exact KIS ``output2`` field names for the constituent
+        code/name/weight have not been confirmed against a live response.
+        ``_parse_etf_component`` maps several plausible field-name variants
+        defensively and always keeps the original row under ``raw`` so
+        callers can fall back to it. Confirm the real field names against a
+        live KIS response and tighten the mapping once verified.
+        """
+
+        normalized_code = str(etf_code).zfill(6)
+        payload, _headers = await self._request(
+            "GET",
+            account_type,
+            ETF_COMPONENTS_PATH,
+            tr_id="FHKST121600C0",
+            params={
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_INPUT_ISCD": normalized_code,
+                "FID_COND_SCR_DIV_CODE": "11216",
+            },
+        )
+        rows = self._as_list(payload.get("output2"))
+        return [self._parse_etf_component(row) for row in rows]
 
     async def get_order_execution(
         self,
@@ -755,6 +790,49 @@ class KISRestClient:
             market_cap=market_cap,
             raw=row,
         )
+
+    def _parse_etf_component(self, row: dict[str, Any]) -> dict[str, Any]:
+        """Normalize one KIS ETF constituent row.
+
+        Field names are best-effort (see ``get_etf_components`` docstring)
+        and should be confirmed against a live KIS response.
+        """
+
+        code = self._first_present(
+            row,
+            "stck_shrn_iscd",
+            "STCK_SHRN_ISCD",
+            "isu_shrn_cd",
+            "ISU_SHRN_CD",
+            "pdno",
+            "PDNO",
+            "code",
+        )
+        name = self._first_present(
+            row,
+            "hts_kor_isnm",
+            "HTS_KOR_ISNM",
+            "isu_kor_nm",
+            "ISU_KOR_NM",
+            "prdt_name",
+            "name",
+        )
+        weight = self._first_decimal(
+            row,
+            "etf_cnfg_issu_avls_rlim",
+            "ETF_CNFG_ISSU_AVLS_RLIM",
+            "wght",
+            "WGHT",
+            "cmpst_rt",
+            "CMPST_RT",
+            "weight",
+        )
+        return {
+            "code": code.zfill(6) if code and code.isdigit() else code,
+            "name": name,
+            "weight": weight,
+            "raw": row,
+        }
 
     def _market_cap_to_krw(self, value: Decimal | None) -> Decimal | None:
         if value is None:

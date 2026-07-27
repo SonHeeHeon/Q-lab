@@ -9,6 +9,7 @@ library;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/entities/proposal.dart';
+import '../../domain/entities/us_advisory.dart';
 import 'api_client.dart';
 
 class ProposalsApi {
@@ -69,6 +70,20 @@ class ProposalsApi {
       },
     );
     return asJsonMap(res.data);
+  }
+
+  /// US 자문(실주문 없음): US 퀀트 방정식 랭킹 vs Toss 보유 → BUY/SELL/HOLD.
+  Future<UsAdvisoryResult> usAdvisory(
+      {String strategy = 'us_stock_v1', int? topN}) async {
+    final dio = _ref.read(dioProvider);
+    final res = await dio.get<dynamic>(
+      '/api/proposals/us-advisory',
+      queryParameters: {
+        'strategy': strategy,
+        if (topN != null) 'top_n': topN,
+      },
+    );
+    return UsAdvisoryResult.fromJson(asJsonMap(res.data));
   }
 }
 

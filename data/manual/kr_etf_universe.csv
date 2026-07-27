@@ -1,0 +1,34 @@
+# Q-Lab 큐레이션 KR ETF 유니버스 (서로 다른 익스포저 대표). 리드 작성 템플릿 —
+# 코드는 실환경(pykrx 열거)에서 최종 검증 필요. tax_class: domestic_equity=매매차익 비과세,
+# taxable=배당소득 15.4%. category는 중복 익스포저 방지용 그룹.
+code,name,category,tax_class
+069500,KODEX 200,kr_large,domestic_equity
+229200,KODEX 코스닥150,kr_small,domestic_equity
+091160,KODEX 반도체,kr_sector_semi,domestic_equity
+091170,KODEX 은행,kr_sector_bank,domestic_equity
+091180,KODEX 자동차,kr_sector_auto,domestic_equity
+305720,KODEX 2차전지산업,kr_sector_battery,domestic_equity
+266420,KODEX 헬스케어,kr_sector_health,domestic_equity
+279530,KODEX 고배당,kr_dividend,domestic_equity
+133690,TIGER 미국나스닥100,us_nasdaq,taxable
+360750,TIGER 미국S&P500,us_sp500,taxable
+143850,TIGER 미국S&P500선물(H),us_sp500_futures,taxable
+381180,TIGER 미국필라델피아반도체나스닥,us_semi,taxable
+192090,TIGER 차이나CSI300,region_china,taxable
+251350,KODEX 선진국MSCI World,region_dm,taxable
+195980,ARIRANG 신흥국MSCI,region_em,taxable
+245710,KINDEX 베트남VN30,region_vietnam,taxable
+132030,KODEX 골드선물(H),commodity_gold,taxable
+144600,KODEX 은선물(H),commodity_silver,taxable
+130680,TIGER 원유선물Enhanced(H),commodity_oil,taxable
+261240,KODEX 미국달러선물,fx_usd,taxable
+114260,KODEX 국고채3년,kr_bond_3y,taxable
+148070,KOSEF 국고채10년,kr_bond_10y,taxable
+153130,KODEX 단기채권,kr_bond_short,taxable
+273130,KODEX 종합채권(AA-이상)액티브,kr_bond_agg,taxable
+305080,TIGER 미국채10년선물,us_bond_10y,taxable
+329200,TIGER 리츠부동산인프라,reit,taxable
+114800,KODEX 인버스,inverse,taxable
+# US 안정형(SCHD형 배당 + 달러단기채) — 연금/DC 안정 비중용. 코드는 실환경 pykrx 열거로 최종 검증 권장.
+458730,TIGER 미국배당다우존스,us_dividend,taxable
+329750,TIGER 미국달러단기채권액티브,us_bond_short,taxable

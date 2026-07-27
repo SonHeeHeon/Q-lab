@@ -38,7 +38,10 @@ dependencies = [
     "pandas",
     "pydantic>=2",
     "pydantic-settings",
-    "pykrx",
+    # 1.0.x는 KRX 데이터포털 API 변경으로 ETF목록/구성종목/지수/시총 조회가 파손됨.
+    # 1.2.8+ 필요. 단 이들 KRX 엔드포인트는 KRX_ID/KRX_PW(데이터포털 로그인)도 요구
+    # (data_sync가 settings→os.environ으로 주입). 가격/모멘텀은 Naver·FDR라 로그인 불필요.
+    "pykrx>=1.2.8",
     "python-dotenv",
     "pyyaml",
     "scikit-learn",

@@ -23,3 +23,9 @@ min_groups: 1
 winsor_pct: 0.01
 clip_z: 3.0
 use_regime: false
+
+# 기본판은 게이트 OFF. 절대 모멘텀 게이트(자기 12M 모멘텀<=0 자산군 미보유·현금 대체,
+# 하락장 방어)는 abs_momentum_gate: true 로 켜서 직접 비교 실험할 수 있다.
+# 튜닝된 개인 설정은 research/strategies/private/ (gitignore) 에 두면 이 파일을 덮는다.
+abs_momentum_gate: false
+abs_momentum_factor: MOMENTUM_12M

@@ -12,6 +12,15 @@
 순수 빌더(build_rule_proposals/full_rebalance_proposals)는 DB/브로커 없이
 테스트되고, 엔진의 규칙 헬퍼(_band_trim_target/_score_exit_swaps)를 그대로
 재사용해 백테스트와 라이브 제안이 같은 논리로 움직인다.
+
+SELL 초안 세금 주석(quasi-contract): ``run_proposal_generation``은 초안이
+빌더에서 나온 뒤 ``_insert_proposals`` 저장 전에, side=="SELL"인 각 초안의
+``reason``에 다음 4개 키를 병합한다(Flutter 제안 카드가 그대로 읽으므로 키
+이름·의미는 임의 변경 금지) — ``tax_type``(``research.backtest.tax_kr.
+classify_kr_instrument`` 결과: stock/etf_domestic_equity/etf_taxable/unknown),
+``est_sell_tax``·``est_gains_tax``(반올림된 정수 KRW), ``tax_note``(표시용
+안내문). BUY 초안에는 붙지 않는다. 순수 빌더 자체는 세금 파라미터를 모른다 —
+세금 계산은 순수하게 표시용 후처리이기 때문.
 """
 
 from __future__ import annotations
@@ -19,11 +28,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import sqlite3
 import uuid
 from dataclasses import dataclass, field
 from datetime import date as Date
 from datetime import datetime, time, timedelta
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import select, update
 
@@ -35,6 +46,7 @@ from backend.app.services.batch.daily_analysis import (
 from backend.app.services.kis.rest_client import KISRestClient
 from research.backtest.engine import (
     _allocate_equal_weight,
+    _apply_abs_momentum_gate,
     _band_trim_target,
     _score_exit_swaps,
     apply_filters,
@@ -43,7 +55,8 @@ from research.backtest.engine import (
 )
 from research.backtest.macro_data import load_regime_series
 from research.backtest.regime import compute_regime
-from shared.db.models import OrderProposal
+from research.backtest.tax_kr import classify_kr_instrument, estimate_sell_tax
+from shared.db.models import OrderProposal, Setting
 from shared.db.session import research_db_path, service_session
 from shared.domain.account import AccountType
 from shared.domain.strategy import StrategyDefinition
@@ -129,6 +142,11 @@ def build_rule_proposals(
             price = prices.get(exit_code)
             if qty <= 0 or not price:
                 continue
+            repl_price = prices.get(replacement) if replacement else None
+            if replacement and (not repl_price or repl_price <= 0):
+                # 교체 종목 가격이 없으면 스왑 전체를 건너뛴다 (고아 매도 방지) —
+                # 매도만 나가고 매수가 빠지면 스왑 시맨틱이 깨진다.
+                continue
             exiting.add(exit_code)
             drafts.append(
                 ProposalDraft(
@@ -138,17 +156,15 @@ def build_rule_proposals(
                 )
             )
             if replacement:
-                repl_price = prices.get(replacement)
-                if repl_price and repl_price > 0:
-                    budget = qty * price * SWAP_BUDGET_HAIRCUT
-                    repl_qty = int(budget // repl_price)
-                    if repl_qty > 0:
-                        drafts.append(
-                            ProposalDraft(
-                                replacement, "BUY", repl_qty, repl_price,
-                                {"rule": "SCORE_EXIT", "replaces": exit_code},
-                            )
+                budget = qty * price * SWAP_BUDGET_HAIRCUT
+                repl_qty = int(budget // repl_price)
+                if repl_qty > 0:
+                    drafts.append(
+                        ProposalDraft(
+                            replacement, "BUY", repl_qty, repl_price,
+                            {"rule": "SCORE_EXIT", "replaces": exit_code},
                         )
+                    )
 
     if strategy.band_trim_threshold is not None:
         remaining = {c: q for c, q in positions.items() if c not in exiting}
@@ -200,10 +216,17 @@ def full_rebalance_proposals(
     nav: float,
     selected: list[str],
     exposure: float = 1.0,
+    slots: int | None = None,
 ) -> list[ProposalDraft]:
-    """분기 앵커: 목표 동일가중 포트폴리오와 현 보유의 전체 diff (순수)."""
+    """분기 앵커: 목표 동일가중 포트폴리오와 현 보유의 전체 diff (순수).
+
+    ``slots``는 절대모멘텀 게이트(E5) 전용 — 엔진과 동일하게, 게이트로
+    빠진 종목의 슬롯을 생존자에게 재분배하지 않고 현금으로 남기려면
+    게이트 전 top_n(고정 분모)을 넘긴다. 기본(None)은
+    ``_allocate_equal_weight``가 ``len(selected)``를 쓰는 기존 동작 그대로.
+    """
     target = _allocate_equal_weight(
-        selected, nav=nav, prices=prices, exposure=exposure
+        selected, nav=nav, prices=prices, exposure=exposure, slots=slots
     )
     drafts: list[ProposalDraft] = []
     for code in sorted(set(positions) | set(target)):
@@ -229,14 +252,30 @@ async def run_proposal_generation(
     account_type: AccountType | None = None,
     full_rebalance: bool = False,
     send_telegram: bool = True,
+    nav_weight: float | None = None,
+    prefetched_balance: Any | None = None,
 ) -> dict:
-    """제안 생성 본체 — 브로커 보유 조회 → 규칙/전체 diff → INSERT → 텔레그램."""
+    """제안 생성 본체 — 브로커 보유 조회 → 슬리브 스코핑 → 규칙/전체 diff → INSERT → 텔레그램.
+
+    슬리브 스코핑(안전장치, opt-in 파라미터 없이 항상 적용): 전략이 ``ETF_KR``
+    이면 보유 중 ETF만, 그 외 전략이면 보유 중 ETF가 아닌 것만 본다. 이후
+    규칙/전체 diff/노출/NAV 계산은 전부 그 슬리브 안에서만 이뤄진다 —
+    ETF 전략이 주식을 팔거나 주식 전략이 ETF를 파는 사고를 구조적으로 막는다.
+
+    ``nav_weight``/``prefetched_balance``는 :func:`run_sleeve_proposals`
+    오케스트레이터가 두 슬리브를 한 번의 잔고 조회로 실행하기 위한 훅이다 —
+    단독 호출(예: API의 명시적 strategy_name 경로)에서는 생략하면 된다.
+    """
     strategy = load_strategy(strategy_name or settings.DEFAULT_STRATEGY_NAME)
     account = account_type or settings.PROPOSAL_ACCOUNT_TYPE
     as_of = latest_research_price_date()
 
-    client = KISRestClient()
-    balance = await client.get_balance(account)
+    if prefetched_balance is not None:
+        balance = prefetched_balance
+    else:
+        client = KISRestClient()
+        balance = await client.get_balance(account)
+
     positions: dict[str, int] = {}
     entry_prices: dict[str, float] = {}
     prices: dict[str, float] = {}
@@ -254,14 +293,61 @@ async def run_proposal_generation(
     nav = float(balance.summary.total_evaluation_amount or 0) or (
         holdings_value or 1.0
     )
-    invested_exposure = min(1.0, holdings_value / nav) if nav > 0 else 0.0
+
+    # --- 슬리브 스코핑: 보유 종목을 ETF/주식 슬리브로 분리 ---
+    etf_set = set(get_universe("ETF_KR", as_of=as_of, db_path=research_db_path))
+    if strategy.universe == "ETF_KR":
+        sleeve_codes = set(positions) & etf_set
+    else:
+        sleeve_codes = set(positions) - etf_set
+    sleeve_positions = {code: positions[code] for code in sleeve_codes}
+    sleeve_entry_prices = {code: entry_prices[code] for code in sleeve_codes}
+    sleeve_holdings_value = sum(
+        sleeve_positions[code] * prices.get(code, 0.0) for code in sleeve_codes
+    )
+
+    # 슬리브 NAV 비중: nav_weight가 주어지면 그대로 쓴다(오케스트레이터가 이미
+    # ETF_KR용 w / 주식용 1-w를 계산해 넘긴다). 없으면(단독 호출) Setting에서
+    # 읽어 스스로 계산한다.
+    if nav_weight is None:
+        base_weight = await _read_sleeve_weight_setting()
+        weight = base_weight if strategy.universe == "ETF_KR" else (1.0 - base_weight)
+    else:
+        weight = nav_weight
+    sleeve_nav = nav * weight
+
+    if sleeve_nav <= 0:
+        summary = {
+            "proposal_date": as_of.isoformat(),
+            "account": account.value,
+            "strategy": strategy.name,
+            "mode": "REBALANCE" if full_rebalance else "RULES",
+            "drafted": 0,
+            "inserted": 0,
+            "skipped": True,
+            "warning": (
+                f"sleeve_nav<=0 (nav={nav}, weight={weight}) — sleeve skipped"
+            ),
+        }
+        logger.warning("proposal generation skipped: %s", summary)
+        return summary
+
+    invested_exposure = min(1.0, sleeve_holdings_value / sleeve_nav)
 
     ranked_codes: list[str] | None = None
     selected: list[str] = []
+    universe: list[str] = []
+    unclassified_skipped: list[str] = []
     needs_scores = full_rebalance or strategy.replace_if_rank_below is not None
     if needs_scores:
         warnings: list[str] = []
-        universe = get_universe(strategy.universe, as_of=as_of, db_path=research_db_path)
+        # ETF_KR 전략의 유니버스는 위에서 이미 조회한 etf_set과 동일하다 —
+        # 같은 쿼리를 두 번 실행하지 않고 재사용한다.
+        universe = (
+            sorted(etf_set)
+            if strategy.universe == "ETF_KR"
+            else get_universe(strategy.universe, as_of=as_of, db_path=research_db_path)
+        )
         scored = score_stocks(
             universe, strategy.factors, as_of=as_of, db_path=research_db_path,
             warnings=warnings, groups=strategy.groups,
@@ -275,28 +361,81 @@ async def run_proposal_generation(
         ranked_codes = [str(c) for c in scored.index]
         selected = ranked_codes[: strategy.top_n]
         # 스코어 대상 종목의 연구 종가로 가격 공백 보강
-        for code in set(ranked_codes) - set(prices):
-            prices.setdefault(code, 0.0)
+        prices.update(
+            {
+                c: px
+                for c, px in _research_closes(
+                    sorted(set(ranked_codes) - set(prices)), as_of
+                ).items()
+                if px > 0
+            }
+        )
 
     confirmed_exposure: float | None = None
     if strategy.use_regime:
         confirmed_exposure = _confirmed_live_exposure(as_of)
 
     if full_rebalance:
+        # 슬리브 보유 중 전략 유니버스(및 목표 포트폴리오)에 없는 코드는
+        # 분류 불가한 수동 매수로 보고 전체 diff의 매도 대상에서 제외한다 —
+        # full_rebalance_proposals가 positions∪target을 순회하므로, 유니버스에
+        # 없는 종목만 걸러내면 target은 그대로 매수 후보로 남는다.
+        universe_set = set(universe)
+        rebalance_positions = {
+            code: qty for code, qty in sleeve_positions.items() if code in universe_set
+        }
+        unclassified_skipped = sorted(set(sleeve_positions) - universe_set)
+        # 절대모멘텀 게이트(E5, engine._apply_abs_momentum_gate 재사용): 게이트
+        # 대상(자기 모멘텀<=0)은 top_n에서 빠지지만, 배분 분모(slots)는 게이트
+        # 전 top_n으로 고정한다 — 빠진 슬롯은 생존자에게 재분배되지 않고
+        # 현금으로 남아 백테스트와 동일한 결과를 낸다.
+        slots: int | None = None
+        if strategy.abs_momentum_gate:
+            slots = len(selected)
+            selected = _apply_abs_momentum_gate(
+                selected, scored,
+                factor_name=strategy.abs_momentum_factor,
+                as_of=as_of, db_path=research_db_path,
+                warnings=warnings,
+            )
         drafts = full_rebalance_proposals(
-            positions=positions, prices=prices, nav=nav,
+            positions=rebalance_positions, prices=prices, nav=sleeve_nav,
             selected=selected,
             exposure=confirmed_exposure if confirmed_exposure is not None else 1.0,
+            slots=slots,
         )
     else:
         drafts = build_rule_proposals(
-            strategy=strategy, positions=positions,
-            entry_prices=entry_prices, prices=prices, nav=nav,
+            strategy=strategy, positions=sleeve_positions,
+            entry_prices=sleeve_entry_prices, prices=prices, nav=sleeve_nav,
             ranked_codes=ranked_codes,
             invested_exposure=invested_exposure,
             confirmed_regime_exposure=confirmed_exposure,
         )
     drafts = [d for d in drafts if d.qty > 0 and d.last_price > 0]
+    for draft in drafts:
+        if draft.side != "SELL":
+            continue
+        is_etf = draft.stock_code in etf_set
+        entry = entry_prices.get(draft.stock_code) or 0.0
+        classification = classify_kr_instrument(draft.stock_code, is_etf=is_etf)
+        tax = estimate_sell_tax(
+            draft.stock_code, draft.qty, draft.last_price, entry,
+            classification=classification,
+        )
+        if classification == "etf_taxable" and not entry:
+            # 매입단가 미확인 — 차익을 추정하면 (매도가-0)*수량을 전부 차익으로
+            # 오인해 세금을 크게 과대추정하게 된다. 절대 추측하지 않고 0으로
+            # 표시한다(안내문은 그대로 유지).
+            tax = {**tax, "est_gains_tax": 0.0}
+        draft.reason.update(
+            {
+                "tax_type": tax["tax_type"],
+                "est_sell_tax": round(tax["est_sell_tax"]),
+                "est_gains_tax": round(tax["est_gains_tax"]),
+                "tax_note": tax["tax_note"],
+            }
+        )
 
     inserted = await _insert_proposals(
         drafts, strategy=strategy, account=account, as_of=as_of,
@@ -308,11 +447,198 @@ async def run_proposal_generation(
         "mode": "REBALANCE" if full_rebalance else "RULES",
         "drafted": len(drafts),
         "inserted": inserted,
+        "buy_notional": round(
+            sum(d.estimated_notional for d in drafts if d.side == "BUY"), 2
+        ),
     }
+    if unclassified_skipped:
+        summary["unclassified_skipped"] = unclassified_skipped
     logger.info("proposal generation %s", summary)
     if send_telegram and inserted:
         await _notify(drafts, summary)
     return summary
+
+
+async def run_sleeve_proposals(
+    *,
+    account_type: AccountType | None = None,
+    send_telegram: bool = True,
+) -> dict:
+    """2-슬리브(주식/ETF) 오케스트레이터 — KIS 잔고 1회 조회를 양쪽에 재사용.
+
+    주식 슬리브는 매일 규칙(daily rules) 모드로 실행되고, ETF 슬리브는
+    월초 첫 거래일에만 분기 앵커(full_rebalance) 모드로 실행된다. 한쪽
+    슬리브가 실패해도(예: private 전략 파일 누락) 다른 슬리브는 계속
+    실행된다 — 최종 안전장치는 승인 게이트 + 브로커 거부이므로, 여기서는
+    경고만 남기고 제안 자체를 막지는 않는다.
+    """
+    account = account_type or settings.PROPOSAL_ACCOUNT_TYPE
+    as_of = latest_research_price_date()
+    stock_name, etf_name, weight = await _read_sleeve_settings()
+
+    client = KISRestClient()
+    balance = await client.get_balance(account)
+
+    warnings: list[str] = []
+    sleeves: dict[str, dict] = {}
+
+    sleeves["stock"] = await _run_sleeve_safe(
+        "stock",
+        strategy_name=stock_name,
+        account=account,
+        full_rebalance=False,
+        nav_weight=1.0 - weight,
+        prefetched_balance=balance,
+        send_telegram=send_telegram,
+        warnings=warnings,
+    )
+
+    if _is_month_start(as_of):
+        sleeves["etf"] = await _run_sleeve_safe(
+            "etf",
+            strategy_name=etf_name,
+            account=account,
+            full_rebalance=True,
+            nav_weight=weight,
+            prefetched_balance=balance,
+            send_telegram=send_telegram,
+            warnings=warnings,
+        )
+    else:
+        sleeves["etf"] = {"skipped": "skipped (not month start)"}
+
+    account_nav, account_holdings_value = _account_nav_and_holdings(balance)
+    est_cash = account_nav - account_holdings_value
+    total_buy_notional = sum(
+        sleeve.get("buy_notional", 0.0) for sleeve in sleeves.values()
+    )
+    if total_buy_notional > est_cash:
+        warnings.append(
+            f"cash over-commit: buys≈{total_buy_notional:.0f} > "
+            f"est_cash≈{est_cash:.0f}"
+        )
+
+    summary = {"as_of": as_of.isoformat(), "sleeves": sleeves, "warnings": warnings}
+    logger.info("sleeve proposal generation %s", summary)
+    return summary
+
+
+async def _run_sleeve_safe(
+    label: str,
+    *,
+    strategy_name: str,
+    account: AccountType,
+    full_rebalance: bool,
+    nav_weight: float,
+    prefetched_balance: Any,
+    send_telegram: bool,
+    warnings: list[str],
+) -> dict:
+    """한 슬리브를 실행하고, 실패해도 다른 슬리브를 막지 않도록 예외를 가둔다."""
+    try:
+        return await run_proposal_generation(
+            strategy_name=strategy_name,
+            account_type=account,
+            full_rebalance=full_rebalance,
+            send_telegram=send_telegram,
+            nav_weight=nav_weight,
+            prefetched_balance=prefetched_balance,
+        )
+    except FileNotFoundError as exc:
+        logger.warning("sleeve %s skipped: strategy file missing (%s)", label, exc)
+        warnings.append(f"{label} sleeve: strategy file missing ({exc})")
+        return {"error": f"strategy file missing: {exc}"}
+    except Exception as exc:  # noqa: BLE001 — 한쪽 슬리브 실패가 다른 슬리브를 막으면 안 됨
+        logger.exception("sleeve %s failed", label)
+        warnings.append(f"{label} sleeve failed: {exc}")
+        return {"error": "sleeve generation failed (see logs)"}
+
+
+def _parse_sleeve_weight(raw: str | None) -> float:
+    """ETF 슬리브 비중 문자열 파싱 — backend.app.api.settings.parse_sleeve_weight와
+    동일한 로직의 인라인 재구현이다(batch 계층은 api 계층을 import하지 않는다).
+    파싱 실패 시 settings.DEFAULT_SLEEVE_ETF_WEIGHT로 폴백하고 [0.0, 1.0]로 clamp.
+    """
+    try:
+        value = float(raw) if raw is not None else settings.DEFAULT_SLEEVE_ETF_WEIGHT
+    except (TypeError, ValueError):
+        value = settings.DEFAULT_SLEEVE_ETF_WEIGHT
+    return max(0.0, min(1.0, value))
+
+
+async def _read_sleeve_weight_setting() -> float:
+    async with service_session() as session:
+        row = await session.get(Setting, "sleeve_etf_weight")
+    return _parse_sleeve_weight(row.value if row is not None else None)
+
+
+async def _read_sleeve_settings() -> tuple[str, str, float]:
+    """(주식 전략명, ETF 전략명, ETF 비중) — Setting 조회 + 기본값 폴백."""
+    async with service_session() as session:
+        rows = {
+            row.key: row.value
+            for row in (await session.execute(select(Setting))).scalars()
+        }
+    stock_name = rows.get("rating_strategy_name") or settings.DEFAULT_STRATEGY_NAME
+    etf_name = rows.get("etf_strategy_name") or settings.DEFAULT_ETF_STRATEGY_NAME
+    weight = _parse_sleeve_weight(rows.get("sleeve_etf_weight"))
+    return stock_name, etf_name, weight
+
+
+def _account_nav_and_holdings(balance: Any) -> tuple[float, float]:
+    """계좌 전체(잔고) NAV·평가금액 — run_proposal_generation의 계좌 루프와 동일 계산."""
+    holdings_value = 0.0
+    for pos in balance.positions:
+        qty = int(pos.quantity)
+        if qty <= 0:
+            continue
+        price = float(pos.current_price or pos.avg_buy_price or 0)
+        holdings_value += qty * price
+    nav = float(balance.summary.total_evaluation_amount or 0) or (
+        holdings_value or 1.0
+    )
+    return nav, holdings_value
+
+
+def _is_month_start(as_of: Date) -> bool:
+    """as_of 이전 최신 거래일이 전월(또는 전년)이면 월초 첫 거래일로 판단한다."""
+    with sqlite3.connect(research_db_path) as conn:
+        row = conn.execute(
+            "SELECT MAX(date) FROM prices_daily WHERE date < ?",
+            (as_of.isoformat(),),
+        ).fetchone()
+    prev_raw = row[0] if row else None
+    if prev_raw is None:
+        return True
+    prev = Date.fromisoformat(str(prev_raw))
+    return prev.year != as_of.year or prev.month != as_of.month
+
+
+def _research_closes(codes: list[str], as_of: Date) -> dict[str, float]:
+    """연구DB(prices_daily)에서 as_of 이하 최신 종가로 가격 공백을 보강.
+
+    코드별 ``COALESCE(adj_close, close)`` 최신값(``date <= as_of``)을 반환.
+    데이터가 없는 코드는 결과에서 빠진다 — 호출부의 기존 price>0 가드가
+    자연스럽게 걸러낸다(더 이상 0.0으로 조용히 채우지 않는다).
+    """
+    if not codes:
+        return {}
+    placeholders = ",".join("?" * len(codes))
+    with sqlite3.connect(research_db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT stock_code, COALESCE(adj_close, close) AS px
+            FROM prices_daily
+            WHERE stock_code IN ({placeholders}) AND date <= ?
+            ORDER BY stock_code, date
+            """,
+            (*codes, as_of.isoformat()),
+        ).fetchall()
+    latest: dict[str, float] = {}
+    for code, px in rows:
+        if px is not None:
+            latest[code] = float(px)  # date ASC — last row per code wins
+    return latest
 
 
 def _confirmed_live_exposure(as_of: Date, persistence: int = 5) -> float | None:
@@ -349,6 +675,8 @@ async def _insert_proposals(
         pending = await session.execute(
             select(OrderProposal.stock_code, OrderProposal.side).where(
                 OrderProposal.status == "PROPOSED"
+            ).where(
+                OrderProposal.strategy_name == strategy.name
             )
         )
         already = {(row[0], row[1]) for row in pending.all()}

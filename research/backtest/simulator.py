@@ -20,13 +20,20 @@ class CostModel(BaseModel):
 # costs by 23bp per sell (audit finding).
 US_COST_MODEL = CostModel(commission_rate=0.001, sell_tax_rate=0.0, slippage_bps=10.0)
 
+# KR 상장 ETF 매도는 증권거래세 면제(수수료·슬리피지만).
+KR_ETF_COST_MODEL = CostModel(commission_rate=0.00015, sell_tax_rate=0.0, slippage_bps=10.0)
+
 _US_UNIVERSES = {"NASDAQ100", "ETF_US"}
+_KR_ETF_UNIVERSES = {"ETF_KR"}
 
 
 def default_cost_model_for_universe(universe: str) -> CostModel:
     """KRX costs for KR universes, US costs for US universes."""
-    if universe.upper() in _US_UNIVERSES:
+    normalized = universe.upper()
+    if normalized in _US_UNIVERSES:
         return US_COST_MODEL
+    if normalized in _KR_ETF_UNIVERSES:
+        return KR_ETF_COST_MODEL
     return CostModel()
 
 
@@ -44,6 +51,15 @@ class SimulatedTrade(BaseModel):
     slippage_bps: float
     cash_flow: float = Field(
         description="Positive for sell proceeds, negative for buy cash usage."
+    )
+    gains_tax: float = Field(
+        default=0.0,
+        description=(
+            "Capital-gains tax deducted for this SELL (after-tax backtest "
+            "mode only; stamped by the engine, not by execute_trade — this "
+            "helper is stateless and has no notion of entry price/realized "
+            "gain). Always 0.0 when the engine runs without a TaxModel."
+        ),
     )
     reason: dict | None = Field(
         default=None,

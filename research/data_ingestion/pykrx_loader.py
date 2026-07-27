@@ -133,19 +133,27 @@ async def update_prices(
     total_rows = 0
 
     async def load_one(code: str) -> int:
-        stock = _pykrx_stock()
         async with semaphore:
-            try:
-                df = await asyncio.to_thread(
-                    stock.get_market_ohlcv_by_date,
-                    _to_yyyymmdd(start),
-                    _to_yyyymmdd(end),
-                    code,
-                    "d",
-                    True,
-                )
-            except Exception as exc:
-                print(f"[phase2:warn] pykrx price failed for {code}: {exc}")
+            # pykrx가 죽어 있으면(KRX 차단 등) 조용히 FDR로 간다 — 원인은
+            # _pykrx_stock()이 1회만 로깅하므로 종목마다 반복 출력하지 않는다.
+            stock = _pykrx_stock_or_none()
+            df = None
+            if stock is not None:
+                try:
+                    df = await asyncio.to_thread(
+                        stock.get_market_ohlcv_by_date,
+                        _to_yyyymmdd(start),
+                        _to_yyyymmdd(end),
+                        code,
+                        "d",
+                        True,
+                    )
+                except Exception as exc:
+                    _warn_once(
+                        "price", f"pykrx 가격 조회 실패 — FDR로 대체합니다: {exc}"
+                    )
+                    df = None
+            if df is None:
                 df = await asyncio.to_thread(_fdr_price_frame, code, start, end)
             await asyncio.sleep(sleep_seconds)
         rows = _price_rows_from_frame(code, df)
@@ -238,8 +246,15 @@ async def update_market_caps(
     total_rows = 0
 
     async def load_one(code: str) -> int:
-        stock = _pykrx_stock()
+        # pykrx 전용(FDR에는 과거 시총이 없다) — 죽어 있으면 조용히 건너뛴다.
+        stock = _pykrx_stock_or_none()
+        if stock is None:
+            return 0
         async with semaphore:
+            # 세마포어 안에서 다시 확인 — gather가 모든 코루틴을 한꺼번에 띄우므로
+            # 진입 시점 검사만으로는 앞선 종목의 실패를 반영할 수 없다.
+            if _krx_portal_broken:
+                return 0
             try:
                 df = await asyncio.to_thread(
                     stock.get_market_cap_by_date,
@@ -248,10 +263,15 @@ async def update_market_caps(
                     code,
                 )
             except Exception as exc:
-                print(f"[phase2:warn] pykrx market cap failed for {code}: {exc}")
+                _mark_krx_portal_broken()
+                _warn_once(
+                    "market_cap",
+                    f"pykrx 시총 조회 실패 — KRX 포털 무응답, 남은 종목 생략: {exc}",
+                )
                 return 0
             await asyncio.sleep(sleep_seconds)
         rows = _market_cap_rows_from_frame(code, df)
+        _note_krx_ok() if rows else _note_krx_empty("market_cap")
         await _insert_ignore(MarketCapDaily, rows)
         return len(rows)
 
@@ -285,8 +305,14 @@ async def update_investor_flows(
     total_rows = 0
 
     async def load_one(code: str) -> int:
-        stock = _pykrx_stock()
+        # pykrx(KRX 포털) 전용 — 죽어 있으면 조용히 건너뛴다(Flow 팩터만 비게 됨).
+        stock = _pykrx_stock_or_none()
+        if stock is None:
+            return 0
         async with semaphore:
+            # 세마포어 안에서 다시 확인(위 update_market_caps와 같은 이유).
+            if _krx_portal_broken:
+                return 0
             try:
                 df = await asyncio.to_thread(
                     stock.get_market_trading_value_by_date,
@@ -295,10 +321,15 @@ async def update_investor_flows(
                     code,
                 )
             except Exception as exc:
-                print(f"[phase2:warn] pykrx investor flows failed for {code}: {exc}")
+                _mark_krx_portal_broken()
+                _warn_once(
+                    "investor_flows",
+                    f"pykrx 수급 조회 실패 — KRX 포털 무응답, 남은 종목 생략: {exc}",
+                )
                 return 0
             await asyncio.sleep(sleep_seconds)
         rows = _investor_flow_rows_from_frame(code, df)
+        _note_krx_ok() if rows else _note_krx_empty("investor_flows")
         await _insert_ignore(InvestorFlowDaily, rows)
         return len(rows)
 
@@ -490,10 +521,89 @@ def _to_decimal(value: Any) -> Decimal:
     return Decimal(str(value).replace(",", ""))
 
 
-def _pykrx_stock():
-    from pykrx import stock
+_pykrx_import_error: Exception | None = None
 
+
+def _pykrx_stock():
+    """pykrx의 ``stock`` 모듈.
+
+    KRX 자격증명(KRX_ID/KRX_PW)이 환경에 있으면 pykrx는 **import 시점에** KRX
+    데이터포털 로그인을 시도한다. 포털이 차단(Akamai "Access Denied")되면 로그인
+    응답이 HTML이라 JSON 파싱에서 죽고, 파이썬은 실패한 import를 캐시하지 않으므로
+    호출 지점마다(=종목마다) 로그인 HTTP 요청이 새로 나간다. 수백 회 폭주가 백엔드
+    스레드를 포화시켜 모든 API가 무응답이 됐다. 첫 실패를 캐시해 이후엔 즉시 포기한다.
+    """
+    global _pykrx_import_error
+    if _pykrx_import_error is not None:
+        raise _pykrx_import_error
+    try:
+        from pykrx import stock
+    except Exception as exc:  # noqa: BLE001 - import-time KRX login can fail any way
+        _pykrx_import_error = exc
+        print(f"[pykrx:warn] import 실패 — 이후 pykrx 경로는 건너뜁니다: {exc}")
+        raise
     return stock
+
+
+def _pykrx_stock_or_none():
+    """pykrx ``stock`` 모듈, 또는 import가 이미 실패했으면 ``None``.
+
+    호출자는 None이면 **경고 없이** 폴백하거나 건너뛴다. 원인은 최초 1회만
+    남기면 충분한데, 종목마다 예외를 잡아 출력하면 같은 줄이 수백 개 쌓여
+    로그를 뒤덮기 때문이다.
+    """
+    try:
+        return _pykrx_stock()
+    except Exception:  # noqa: BLE001 - 원인은 _pykrx_stock()이 1회 로깅함
+        return None
+
+
+# KRX 데이터포털(시총·수급)이 응답하지 않는 것으로 확인되면 True. 남은 종목은
+# 호출조차 하지 않는다 — 차단 상태에선 수백 번 왕복해도 전부 실패하고, pykrx가
+# 내부적으로 찍는 에러 줄("Error occurred in __fetch: ...")이 로그를 뒤덮는다.
+# 프로세스를 다시 띄우면 초기화되므로 차단이 풀리면 자연히 재시도된다.
+_krx_portal_broken = False
+
+
+def _mark_krx_portal_broken() -> None:
+    global _krx_portal_broken
+    _krx_portal_broken = True
+
+
+# pykrx는 포털이 막혀도 예외를 던지지 않는다 — 내부에서 에러를 print한 뒤 빈
+# DataFrame을 돌려준다. 따라서 예외만으로는 차단을 감지할 수 없어 "연속 빈 응답"
+# 을 함께 본다. 정상 종목이 어쩌다 비는 경우(신규 상장 등)로 오작동하지 않도록
+# 성공이 하나라도 나오면 연속 카운터를 리셋한다.
+_krx_empty_streak = 0
+_KRX_EMPTY_LIMIT = 5
+
+
+def _note_krx_empty(kind: str) -> None:
+    global _krx_empty_streak
+    _krx_empty_streak += 1
+    if _krx_empty_streak >= _KRX_EMPTY_LIMIT:
+        _mark_krx_portal_broken()
+        _warn_once(
+            kind,
+            f"KRX 포털이 연속 {_KRX_EMPTY_LIMIT}회 빈 응답 — 남은 종목은 생략합니다"
+            " (차단 해제 후 백엔드를 재시작하면 다시 시도).",
+        )
+
+
+def _note_krx_ok() -> None:
+    global _krx_empty_streak
+    _krx_empty_streak = 0
+
+
+_warned_keys: set[str] = set()
+
+
+def _warn_once(key: str, message: str) -> None:
+    """같은 원인의 경고를 1회만 출력한다(종목 수만큼 반복되는 로그 폭주 방지)."""
+    if key in _warned_keys:
+        return
+    _warned_keys.add(key)
+    print(f"[phase2:warn] {message}")
 
 
 def _fdr_price_frame(code: str, start: date, end: date) -> pd.DataFrame:
@@ -502,7 +612,9 @@ def _fdr_price_frame(code: str, start: date, end: date) -> pd.DataFrame:
 
         return fdr.DataReader(code, start, end)
     except Exception as exc:
-        print(f"[phase2:warn] FinanceDataReader price failed for {code}: {exc}")
+        _warn_once(
+            "fdr_price", f"FinanceDataReader 가격 조회 실패(이후 종목 생략): {exc}"
+        )
         return pd.DataFrame()
 
 

@@ -50,8 +50,11 @@ class Trade(ServiceBase):
     __table_args__ = {"sqlite_autoincrement": True}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    account_type: Mapped[str] = mapped_column(
-        Text, ForeignKey("accounts.type"), nullable=False
+    account_type: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("accounts.type"), nullable=True
+    )
+    broker: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'KIS'")
     )
     stock_code: Mapped[str] = mapped_column(Text, nullable=False)
     direction: Mapped[str] = mapped_column(Text, nullable=False)

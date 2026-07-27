@@ -24,6 +24,13 @@ class MockFixtures {
     Map<String, dynamic> query,
   ) {
     final key = '${method.toUpperCase()} $path';
+
+    // On-demand compute echoes the requested code back with an OK grade —
+    // dynamic (query-dependent), so it can't live in the static _table.
+    if (key == 'POST /api/ratings/compute') {
+      return MockFixture(data: _ratingCompute(query['code']?.toString() ?? ''));
+    }
+
     final fixture = _table[key];
     if (fixture != null) return fixture;
 
@@ -37,6 +44,9 @@ class MockFixtures {
   static final Map<String, MockFixture> _table = {
     'GET /api/portfolio': MockFixture(data: _portfolioUnified),
     'GET /api/alerts': MockFixture(data: _alerts),
+    'GET /api/ratings': MockFixture(data: _ratings),
+    'GET /api/ratings/positions': MockFixture(data: _positionRatings),
+    'GET /api/ratings/status': MockFixture(data: _ratingStatus),
   };
 
   // ---------------------------------------------------------------------------
@@ -129,6 +139,83 @@ class MockFixtures {
             'current_price': 75500.0,
           },
         ],
+      };
+
+  // ---------------------------------------------------------------------------
+  // Ratings (T7) — buy-axis batch, sell-axis positions, scheduler status,
+  // on-demand compute. Shapes mirror `RatingsApi`'s `fromJson` factories
+  // exactly (`app/lib/data/api/ratings_api.dart`).
+  // ---------------------------------------------------------------------------
+
+  /// `GET /api/ratings` — one OK/STRONG_BUY row (005930, matches the
+  /// portfolio fixture's 삼성전자 PAPER holding) + one NO_DATA row (035420,
+  /// matches the REAL 홀딩 NAVER position so the detail screen's "등급 계산"
+  /// path is exercisable under mock too).
+  static final List<Map<String, dynamic>> _ratings = [
+    {
+      'code': '005930',
+      'status': 'OK',
+      'buy_grade': 'STRONG_BUY',
+      'score': 0.92,
+      'percentile': 0.95,
+      'weakest_group': null,
+      'strategy_name': 'default_v1',
+      'as_of': '2026-07-23',
+      'updated_at': '2026-07-24T06:00:00+09:00',
+    },
+    {
+      'code': '035420',
+      'status': 'NO_DATA',
+      'buy_grade': null,
+      'score': null,
+      'percentile': null,
+      'weakest_group': null,
+      'strategy_name': 'default_v1',
+      'as_of': '2026-07-23',
+      'updated_at': '2026-07-24T06:00:00+09:00',
+    },
+  ];
+
+  /// `GET /api/ratings/positions` — one SELL_NOW (NAVER, REAL account) with
+  /// a STOP_LOSS reason, matching `_portfolioUnified`'s 035420/REAL holding
+  /// so the portfolio + detail screens both render a live sell chip.
+  static final List<Map<String, dynamic>> _positionRatings = [
+    {
+      'broker': 'KIS',
+      'account_key': 'REAL',
+      'code': '035420',
+      'sell_grade': 'SELL_NOW',
+      'reason': {'rule': 'STOP_LOSS', 'pl_rate': -12.3, 'threshold': -10.0},
+      'pl_rate': -12.3,
+      'lane': 'EOD',
+      'updated_at': '2026-07-24T06:00:00+09:00',
+    },
+  ];
+
+  static final Map<String, dynamic> _ratingStatus = {
+    'eod': {
+      'finished_at': '2026-07-24T06:00:00+09:00',
+      'as_of': '2026-07-23',
+      'stored_count': 120,
+    },
+    'intraday': {'finished_at': '2026-07-24T09:31:00+09:00'},
+    'scheduler_running': true,
+    'strategy_name': 'default_v1',
+  };
+
+  /// `POST /api/ratings/compute?code=...` — echoes the requested [code] back
+  /// with a BUY grade, so the detail screen's "등급 계산" button has a
+  /// visible result to render under `USE_MOCK=true`.
+  static Map<String, dynamic> _ratingCompute(String code) => {
+        'code': code,
+        'status': 'OK',
+        'buy_grade': 'BUY',
+        'score': 0.71,
+        'percentile': 0.8,
+        'weakest_group': null,
+        'strategy_name': 'default_v1',
+        'as_of': '2026-07-23',
+        'updated_at': '2026-07-24T06:00:00+09:00',
       };
 
   static final List<Map<String, dynamic>> _alerts = [

@@ -54,6 +54,8 @@ class AppSettings {
     required this.llmApiKeyMasked,
     required this.llmCacheTtlHours,
     required this.ratingStrategyName,
+    required this.etfStrategyName,
+    required this.sleeveEtfWeight,
     this.toss,
   });
 
@@ -70,6 +72,15 @@ class AppSettings {
   /// batch/rating_batch.py`, `Setting` key `rating_strategy_name`). Falls
   /// back to the backend's own default (`DEFAULT_STRATEGY_NAME`).
   final String ratingStrategyName;
+
+  /// ETF-sleeve strategy preset (two-sleeve rollout, 2026-07-25 plan).
+  /// Falls back to the backend's own default (`DEFAULT_ETF_STRATEGY_NAME`).
+  final String etfStrategyName;
+
+  /// Fraction (0.0–1.0) of account NAV run by the ETF sleeve; the stock
+  /// sleeve gets `1 - sleeveEtfWeight`. Clamped defensively so a malformed
+  /// value can never crash the settings screen's `Slider` (min 0 / max 1).
+  final double sleeveEtfWeight;
   final TossSettings? toss;
 
   factory AppSettings.fromJson(Map<String, dynamic> j) => AppSettings(
@@ -86,8 +97,21 @@ class AppSettings {
         llmCacheTtlHours: (j['llm_cache_ttl_hours'] as num?)?.toInt() ?? 24,
         ratingStrategyName:
             (j['rating_strategy_name'] as String?) ?? 'value_v1',
+        etfStrategyName:
+            (j['etf_strategy_name'] as String?) ?? 'etf_rotation_kr',
+        sleeveEtfWeight:
+            ((j['sleeve_etf_weight'] as num?)?.toDouble() ?? 0.3).clamp(0.0, 1.0),
         toss: j['toss'] is Map ? TossSettings.fromJson(asJsonMap(j['toss'])) : null,
       );
+}
+
+/// Rounds a 0.0–1.0 ETF-sleeve weight into whole-percent (ETF, 주식) labels
+/// for the settings slider. Shared by the UI and its tests so the rounding
+/// rule (ETF rounds first, 주식 = 100 − ETF, never independently rounded)
+/// stays in one place.
+(int etfPct, int stockPct) sleeveWeightPct(double etfWeight) {
+  final etf = (etfWeight.clamp(0.0, 1.0) * 100).round();
+  return (etf, 100 - etf);
 }
 
 class KisAccountCreds {

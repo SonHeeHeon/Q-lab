@@ -19,6 +19,7 @@ from research.backtest.simulator import (
     default_cost_model_for_universe,
     rebalance,
 )
+from research.backtest.tax_kr import TaxModel
 from research.factors.momentum import (
     calculate_named_idio_momentum,
     calculate_named_momentum,
@@ -37,6 +38,8 @@ from research.factors.flows import (
 from research.factors.quality import calculate_op_margin, calculate_roa, calculate_roe
 from research.factors.value import calculate_pbr, calculate_per, calculate_psr
 from research.factors.volume import calculate_trading_days_30d, calculate_volume_spike
+from research.factors.volatility import calculate_named_beta, calculate_named_volatility
+from research.factors.fundamental_us import _FUNDAMENTAL_US_FACTORS
 from research.universe.kosdaq150 import KOSDAQ150_CODES_FILE
 from research.universe.kospi200 import DEFAULT_CODES_FILE
 from shared.db.session import research_db_path
@@ -82,6 +85,7 @@ def run_backtest(
     db_path: Path | None = None,
     initial_nav: float = INITIAL_NAV,
     cost_model: CostModel | None = None,
+    tax_model: TaxModel | None = None,
 ) -> RunResult:
     """Run a single-period backtest and return all in-memory artifacts."""
 
@@ -115,10 +119,11 @@ def run_backtest(
     equity_curve: list[EquityPoint] = []
     last_rebalance_day: Date | None = None
 
-    pending_orders: tuple[list[str], float, Callable] | None = None
+    pending_orders: tuple[list[str], float, Callable, int] | None = None
     pending_execute_index = -1
     applied_exposure = 1.0
     last_selected: list[str] = []
+    last_slots = 0
     entry_prices: dict[str, float] = {}
     regime_series: dict = {}
     if strategy.use_regime:
@@ -148,6 +153,12 @@ def run_backtest(
                     tagged = reason_for(executed)
                     if tagged is not None:
                         executed.reason = tagged
+            if tax_model is not None:
+                # Must run before _track_entry_prices: a full-exit SELL pops
+                # its entry price there, and the realized gain needs it.
+                cash = _apply_capital_gains_tax(
+                    tax_model, entry_prices, executed_trades, cash
+                )
             _track_entry_prices(entry_prices, executed_trades, positions_before)
             trades.extend(executed_trades)
             nav = _mark_to_market(cash, positions, last_prices)
@@ -157,12 +168,14 @@ def run_backtest(
             exposure: float,
             day: Date,
             reason_for: "Callable[[SimulatedTrade], dict | None] | None" = None,
+            slots: int | None = None,
         ) -> None:
             target = _allocate_equal_weight(
                 selected,
                 nav=nav,
                 prices=last_prices,
                 exposure=exposure,
+                slots=slots,
             )
             _apply_and_track(
                 rebalance(
@@ -225,11 +238,12 @@ def run_backtest(
                 )
 
         if pending_orders is not None and day_index >= pending_execute_index:
-            lagged_selected, lagged_exposure, lagged_reason = pending_orders
+            lagged_selected, lagged_exposure, lagged_reason, lagged_slots = pending_orders
             pending_orders = None
             _execute(
                 lagged_selected, lagged_exposure, current_day,
                 reason_for=lagged_reason,
+                slots=lagged_slots,
             )
             applied_exposure = lagged_exposure
 
@@ -291,6 +305,7 @@ def run_backtest(
                             "to_exposure": round(regime_to, 2),
                             "label": label,
                         },
+                        slots=last_slots,
                     )
                 applied_exposure = new_exposure
 
@@ -432,6 +447,20 @@ def run_backtest(
                 warnings=warnings,
             )
             selected = list(scored.head(strategy.top_n).index)
+            # Fixed allocation divisor = slots taken at signal time (before
+            # any abs-momentum drop). Gate OFF: slots == len(selected)
+            # always, so _allocate_equal_weight's math is byte-identical to
+            # pre-gate behavior.
+            slots = len(selected)
+            if strategy.abs_momentum_gate:
+                selected = _apply_abs_momentum_gate(
+                    selected,
+                    scored,
+                    factor_name=strategy.abs_momentum_factor,
+                    as_of=current_day,
+                    db_path=path,
+                    warnings=warnings,
+                )
             exposure = 1.0
             regime_label = None
             if strategy.use_regime:
@@ -450,6 +479,7 @@ def run_backtest(
                     f"exposure={exposure:.0%} R={regime.r_score:.2f}",
                 )
             last_selected = selected
+            last_slots = slots
             # Logic-based reason per trade: entered top-N (with rank/score) vs
             # dropped out of top-N. Rank map is bound per rebalance so a lagged
             # fill keeps the signal-day ranking.
@@ -495,10 +525,13 @@ def run_backtest(
             if strategy.execution_lag_days > 0:
                 # Signal today, fill at a later close — removes the
                 # same-close fill assumption (look-ahead robustness).
-                pending_orders = (selected, exposure, _rebalance_reason)
+                pending_orders = (selected, exposure, _rebalance_reason, slots)
                 pending_execute_index = day_index + strategy.execution_lag_days
             else:
-                _execute(selected, exposure, current_day, reason_for=_rebalance_reason)
+                _execute(
+                    selected, exposure, current_day,
+                    reason_for=_rebalance_reason, slots=slots,
+                )
                 applied_exposure = exposure
             last_rebalance_day = current_day
 
@@ -518,6 +551,18 @@ def run_backtest(
         metrics=metrics,
         warnings=warnings,
     )
+
+
+# ETF name substrings marking leverage/inverse products, excluded from the
+# ETF_KR universe (E3 guardrail). Genuine single-exposure hedged/futures
+# ETFs — e.g. "TIGER 미국S&P500선물(H)", "KODEX 골드선물(H)" — are NOT
+# leverage/inverse and stay in. Kept as a local constant (no cross-module
+# import); a future tax-classifier task may reuse the same concept.
+LEVERAGE_INVERSE_MARKERS: tuple[str, ...] = ("레버리지", "인버스", "곱버스", "2X", "2배")
+
+
+def _is_leverage_or_inverse_etf(name: str) -> bool:
+    return any(marker in name for marker in LEVERAGE_INVERSE_MARKERS)
 
 
 def get_universe(
@@ -557,6 +602,10 @@ def get_universe(
         params.append("KOSDAQ")
     elif normalized == "NASDAQ100":
         return _us_universe(as_of=as_of, db_path=path, exchange="NASDAQ")
+    elif normalized in {"US_LARGE", "US_ALL", "SP1500"}:
+        # NASDAQ100 (exchange='NASDAQ') ∪ S&P500-only (exchange='SP500') = ~515
+        # current large-caps. Survivorship caveat: current members only (see plan).
+        return _us_universe(as_of=as_of, db_path=path, exchange=("NASDAQ", "SP500"))
     elif normalized == "ETF_US":
         return _us_universe(as_of=as_of, db_path=path, exchange="ETF")
     elif normalized == "ETF_KR":
@@ -574,7 +623,7 @@ def get_universe(
         raise ValueError(f"Unsupported universe: {universe}")
 
     sql = f"""
-        SELECT code
+        SELECT code, name
         FROM stocks
         WHERE listed_at <= ?
           AND (delisted_at IS NULL OR delisted_at > ?)
@@ -583,6 +632,8 @@ def get_universe(
     """
     with sqlite3.connect(path) as conn:
         rows = conn.execute(sql, params).fetchall()
+    if normalized == "ETF_KR":
+        rows = [row for row in rows if not _is_leverage_or_inverse_etf(row[1])]
     return normalize_codes(row[0] for row in rows)
 
 
@@ -780,6 +831,12 @@ def _factor_series(
                 as_of=as_of,
                 db_path=db_path,
             )
+        if factor_name.startswith("VOLATILITY_"):
+            return calculate_named_volatility(factor_name, codes, as_of=as_of, db_path=db_path)
+        if factor_name.startswith("BETA_"):
+            return calculate_named_beta(factor_name, codes, as_of=as_of, db_path=db_path)
+        if factor_name in _FUNDAMENTAL_US_FACTORS:
+            return _FUNDAMENTAL_US_FACTORS[factor_name](codes, as_of=as_of, db_path=db_path)
         if factor_name == "TRADING_DAYS_30D":
             return calculate_trading_days_30d(codes, as_of=as_of, db_path=db_path)
         if factor_name == "FOREIGN_NET_20D":
@@ -814,6 +871,37 @@ def _factor_series(
 
     _warn(warnings, f"Unsupported factor: {factor_name}")
     return pd.Series(dtype="float64")
+
+
+def _apply_abs_momentum_gate(
+    selected: list[str],
+    scored: pd.DataFrame,
+    *,
+    factor_name: str,
+    as_of: Date,
+    db_path: Path | None,
+    warnings: list[str] | None,
+) -> list[str]:
+    """Absolute-momentum gate (E4): drop candidates whose own
+    ``factor_name`` value is not strictly positive (missing values are
+    treated as failing the gate too — can't confirm positive momentum).
+
+    Dropped slots are simply not bought; the caller keeps the pre-gate
+    count as the allocation divisor so they become cash, not a
+    redistribution to the survivors (see ``_allocate_equal_weight``).
+    """
+    field = factor_name.upper()
+    if field in scored.columns:
+        values = scored[field]
+    else:
+        values = _factor_series(
+            field, selected, as_of=as_of, db_path=db_path, warnings=warnings
+        )
+    return [
+        code
+        for code in selected
+        if pd.notna(values.get(code)) and values.get(code) > 0
+    ]
 
 
 def _true_market_cap(
@@ -955,6 +1043,33 @@ def _track_entry_prices(
             remaining[code] = prev_qty - trade.qty
             if remaining[code] <= 0:
                 entry_prices.pop(code, None)
+
+
+def _apply_capital_gains_tax(
+    tax_model: TaxModel,
+    entry_prices: dict[str, float],
+    executed_trades: list[SimulatedTrade],
+    cash: float,
+) -> float:
+    """Stamp + deduct capital-gains tax on each executed SELL (after-tax mode).
+
+    The single choke point for the after-tax deduction — called once per
+    ``_apply_and_track`` invocation, before ``_track_entry_prices`` runs (a
+    full-exit SELL pops its entry there, and the realized gain needs the
+    pre-trade entry price). BUYs are untouched. A SELL against an unknown
+    entry (position seeded without one, e.g. the very first fill this run
+    never bought) realizes a gain of 0 rather than guessing.
+    """
+    for trade in executed_trades:
+        if trade.side != "SELL":
+            continue
+        entry = entry_prices.get(trade.code)
+        realized_gain = (trade.price - entry) * trade.qty if entry is not None else 0.0
+        gains_tax = tax_model.gains_tax_for(trade.code, realized_gain)
+        trade.gains_tax = gains_tax
+        if gains_tax:
+            cash -= gains_tax
+    return cash
 
 
 def _band_trim_target(
@@ -1108,22 +1223,24 @@ def _us_universe(
     *,
     as_of: Date,
     db_path: Path,
-    exchange: str,
+    exchange: str | tuple[str, ...],
 ) -> list[str]:
+    exchanges = (exchange,) if isinstance(exchange, str) else tuple(exchange)
+    placeholders = ",".join("?" for _ in exchanges)
     with sqlite3.connect(db_path) as conn:
         if not table_exists(conn, "stocks_us"):
             return []
         rows = conn.execute(
-            """
+            f"""
             SELECT ticker
             FROM stocks_us
-            WHERE exchange = ?
+            WHERE exchange IN ({placeholders})
               AND (listed_at IS NULL OR listed_at <= ?)
               AND (delisted_at IS NULL OR delisted_at > ?)
               AND is_delisted = 0
             ORDER BY ticker
             """,
-            [exchange, as_of.isoformat(), as_of.isoformat()],
+            [*exchanges, as_of.isoformat(), as_of.isoformat()],
         ).fetchall()
     return normalize_codes(row[0] for row in rows)
 
@@ -1208,7 +1325,7 @@ def _load_price_rows(start: Date, end: Date, db_path: Path, universe: str) -> pd
     normalized_universe = universe.upper()
     with sqlite3.connect(db_path) as conn:
         frames: list[pd.DataFrame] = []
-        if normalized_universe not in {"NASDAQ100", "ETF_US"} and table_exists(
+        if normalized_universe not in {"NASDAQ100", "US_LARGE", "ETF_US"} and table_exists(
             conn, "prices_daily"
         ):
             frames.append(
@@ -1223,7 +1340,7 @@ def _load_price_rows(start: Date, end: Date, db_path: Path, universe: str) -> pd
                     params=[start.isoformat(), end.isoformat()],
                 )
             )
-        if normalized_universe in {"NASDAQ100", "ETF_US", "CUSTOM"} and table_exists(
+        if normalized_universe in {"NASDAQ100", "US_LARGE", "ETF_US", "CUSTOM"} and table_exists(
             conn, "prices_daily_us"
         ):
             frames.append(
@@ -1287,12 +1404,23 @@ def _allocate_equal_weight(
     nav: float,
     prices: dict[str, float],
     exposure: float = 1.0,
+    slots: int | None = None,
 ) -> dict[str, int]:
+    """Equal-weight allocation across ``selected_codes``.
+
+    ``slots`` is the fixed divisor for budget_per_stock — defaults to
+    ``len(selected_codes)`` (today's behavior, unchanged). Pass a larger
+    fixed ``slots`` (e.g. the pre-gate top_n) to cash-pad rather than
+    redistribute budget to fewer survivors (E4 abs-momentum gate).
+    """
     invested = max(0.0, min(1.0, exposure))
     if not selected_codes or nav <= 0 or invested <= 0:
         return {}
 
-    budget_per_stock = (nav * INVESTABLE_NAV_RATIO * invested) / len(selected_codes)
+    divisor = slots if slots is not None else len(selected_codes)
+    if divisor <= 0:
+        return {}
+    budget_per_stock = (nav * INVESTABLE_NAV_RATIO * invested) / divisor
     target: dict[str, int] = {}
     for code in selected_codes:
         price = prices.get(code)

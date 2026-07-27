@@ -12,11 +12,13 @@ import 'package:intl/intl.dart';
 
 import '../../core/theme.dart';
 import '../../data/api/portfolio_api.dart';
+import '../../data/api/ratings_api.dart';
 import '../../data/ws/quotes_ws_client.dart';
 import '../../domain/entities/account.dart';
 import '../../domain/entities/position.dart';
 import '../../shared/format/money.dart';
 import '../../shared/widgets/empty_state.dart';
+import '../../shared/widgets/rating_chip.dart';
 import 'order_sheet.dart';
 import 'portfolio_controller.dart';
 
@@ -26,6 +28,27 @@ final _krw = NumberFormat.currency(symbol: '₩', decimalDigits: 0);
 final _qty = NumberFormat('#,##0');
 final _pct = NumberFormat('+0.00;-0.00');
 final _timeFmt = DateFormat('MM/dd HH:mm');
+
+// ---------------------------------------------------------------------------
+// Sell-axis ratings — one shared (non-family) fetch for every holdings row on
+// screen, joined by the same (broker, account_key, code) composite key the
+// backend uses for `position_ratings`' primary key (see
+// `backend/app/services/batch/rating_batch.py`: `account_key` is the KIS
+// `AccountType.value` for KIS accounts, `"TOSS:{account_id}"` for Toss).
+// ---------------------------------------------------------------------------
+
+final _positionRatingsProvider =
+    FutureProvider.autoDispose<Map<String, PositionRating>>((ref) async {
+  final list = await ref.read(ratingsApiProvider).getPositions();
+  return {for (final p in list) _ratingKey(p.broker, p.accountKey, p.code): p};
+});
+
+String _ratingKey(String broker, String accountKey, String code) =>
+    '${broker.toUpperCase()}|$accountKey|$code';
+
+String _kisAccountKey(KisAccount accountType) => accountType.wire;
+
+String _tossAccountKey(String? accountId) => 'TOSS:${accountId ?? ''}';
 
 class PortfolioScreen extends ConsumerWidget {
   const PortfolioScreen({super.key});
@@ -198,6 +221,11 @@ class _UnifiedContent extends ConsumerWidget {
     final theme = Theme.of(context);
     final krPositions = portfolio.positions.where((p) => !p.isUs).toList();
     final usPositions = portfolio.positions.where((p) => p.isUs).toList();
+    // Batch buy-axis lookup for every held code in one request (shares the
+    // family-cached fetch with any other screen requesting the same codes).
+    final buyRatings = ref.watch(
+      ratingsMapProvider(ratingsKey(portfolio.positions.map((p) => p.stockCode))),
+    ).valueOrNull ?? const <String, StockRating>{};
     return RefreshIndicator(
       onRefresh: () => ref.refresh(unifiedPortfolioProvider.future),
       child: ListView(
@@ -224,6 +252,7 @@ class _UnifiedContent extends ConsumerWidget {
                 title: '국내 (국장)',
                 positions: krPositions,
                 fxRate: portfolio.fxRate,
+                buyRatings: buyRatings,
               ),
             if (usPositions.isNotEmpty)
               _PositionSection(
@@ -231,6 +260,7 @@ class _UnifiedContent extends ConsumerWidget {
                 title: '해외 (미장)',
                 positions: usPositions,
                 fxRate: portfolio.fxRate,
+                buyRatings: buyRatings,
               ),
           ],
           if (portfolio.errors.isNotEmpty) ...[
@@ -250,12 +280,14 @@ class _PositionSection extends StatelessWidget {
     required this.title,
     required this.positions,
     required this.fxRate,
+    required this.buyRatings,
   });
 
   final String flag;
   final String title;
   final List<UnifiedPosition> positions;
   final double? fxRate;
+  final Map<String, StockRating> buyRatings;
 
   @override
   Widget build(BuildContext context) {
@@ -301,8 +333,11 @@ class _PositionSection extends StatelessWidget {
               physics: const NeverScrollableScrollPhysics(),
               itemCount: positions.length,
               separatorBuilder: (_, __) => const Divider(height: 1),
-              itemBuilder: (_, i) =>
-                  _UnifiedPositionRow(position: positions[i], fxRate: fxRate),
+              itemBuilder: (_, i) => _UnifiedPositionRow(
+                position: positions[i],
+                fxRate: fxRate,
+                buyRating: buyRatings[positions[i].stockCode],
+              ),
             ),
           ),
         ],
@@ -448,9 +483,14 @@ class _AccountSummaryTile extends StatelessWidget {
 }
 
 class _UnifiedPositionRow extends ConsumerWidget {
-  const _UnifiedPositionRow({required this.position, required this.fxRate});
+  const _UnifiedPositionRow({
+    required this.position,
+    required this.fxRate,
+    this.buyRating,
+  });
   final UnifiedPosition position;
   final double? fxRate;
+  final StockRating? buyRating;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -458,6 +498,12 @@ class _UnifiedPositionRow extends ConsumerWidget {
     final p = position;
     final cur = p.currency;
     final isUs = p.isUs;
+
+    final accountKey = p.broker == BrokerType.TOSS
+        ? _tossAccountKey(p.accountId)
+        : _kisAccountKey(p.accountType ?? KisAccount.paper);
+    final sellRating = ref.watch(_positionRatingsProvider).valueOrNull
+        ?[_ratingKey(p.broker.wire, accountKey, p.stockCode)];
 
     // Live tick is in the position's native currency (USD for 미장).
     final liveTick = ref.watch(quotesProvider.select((m) => m[p.stockCode]));
@@ -518,6 +564,20 @@ class _UnifiedPositionRow extends ConsumerWidget {
                   const SizedBox(height: 2),
                   Text('${p.stockCode}  ·  ${_qty.format(p.quantity)}주',
                       style: theme.textTheme.bodySmall),
+                  if (buyRating != null || sellRating != null) ...[
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 4,
+                      runSpacing: 2,
+                      children: [
+                        if (buyRating != null && buyRating!.status.toUpperCase() == 'OK')
+                          RatingChip.buy(buyRating!.buyGrade, dense: true),
+                        if (sellRating != null)
+                          RatingChip.sell(sellRating.sellGrade,
+                              reason: sellRating.reason, dense: true),
+                      ],
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -692,6 +752,9 @@ class _DetailBody extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
+    final buyRatings = ref.watch(
+      ratingsMapProvider(ratingsKey(detail.positions.map((p) => p.stockCode))),
+    ).valueOrNull ?? const <String, StockRating>{};
     return RefreshIndicator(
       onRefresh: () => ref.refresh(accountDetailProvider.future),
       child: ListView(
@@ -705,7 +768,7 @@ class _DetailBody extends ConsumerWidget {
           if (detail.positions.isEmpty)
             _EmptyHoldings()
           else
-            _HoldingsTable(positions: detail.positions),
+            _HoldingsTable(positions: detail.positions, buyRatings: buyRatings),
         ],
       ),
     );
@@ -815,8 +878,9 @@ class _EmptyHoldings extends StatelessWidget {
 // ---------------------------------------------------------------------------
 
 class _HoldingsTable extends StatelessWidget {
-  const _HoldingsTable({required this.positions});
+  const _HoldingsTable({required this.positions, required this.buyRatings});
   final List<Position> positions;
+  final Map<String, StockRating> buyRatings;
 
   @override
   Widget build(BuildContext context) {
@@ -826,15 +890,19 @@ class _HoldingsTable extends StatelessWidget {
         physics: const NeverScrollableScrollPhysics(),
         itemCount: positions.length,
         separatorBuilder: (_, __) => const Divider(height: 1),
-        itemBuilder: (_, i) => _HoldingRow(position: positions[i]),
+        itemBuilder: (_, i) => _HoldingRow(
+          position: positions[i],
+          buyRating: buyRatings[positions[i].stockCode],
+        ),
       ),
     );
   }
 }
 
 class _HoldingRow extends ConsumerStatefulWidget {
-  const _HoldingRow({required this.position});
+  const _HoldingRow({required this.position, this.buyRating});
   final Position position;
+  final StockRating? buyRating;
 
   @override
   ConsumerState<_HoldingRow> createState() => _HoldingRowState();
@@ -878,6 +946,10 @@ class _HoldingRowState extends ConsumerState<_HoldingRow>
     final livePrice = liveTick?.price ?? p.currentPrice ?? p.avgBuyPrice;
     _maybeFlash(liveTick?.price);
 
+    // KIS-only pane — broker is always KIS, account_key = the tab's account type.
+    final sellRating = ref.watch(_positionRatingsProvider).valueOrNull
+        ?[_ratingKey(BrokerType.KIS.wire, _kisAccountKey(p.accountType), p.stockCode)];
+
     final marketValue = livePrice * p.quantity;
     final costBasis = p.avgBuyPrice * p.quantity;
     final pl = marketValue - costBasis;
@@ -920,6 +992,21 @@ class _HoldingRowState extends ConsumerState<_HoldingRow>
                     const SizedBox(height: 2),
                     Text('${p.stockCode}  ·  ${_qty.format(p.quantity)}주',
                         style: theme.textTheme.bodySmall),
+                    if (widget.buyRating != null || sellRating != null) ...[
+                      const SizedBox(height: 4),
+                      Wrap(
+                        spacing: 4,
+                        runSpacing: 2,
+                        children: [
+                          if (widget.buyRating != null &&
+                              widget.buyRating!.status.toUpperCase() == 'OK')
+                            RatingChip.buy(widget.buyRating!.buyGrade, dense: true),
+                          if (sellRating != null)
+                            RatingChip.sell(sellRating.sellGrade,
+                                reason: sellRating.reason, dense: true),
+                        ],
+                      ),
+                    ],
                   ],
                 ),
               ),

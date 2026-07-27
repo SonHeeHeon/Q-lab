@@ -40,6 +40,7 @@ from dotenv import load_dotenv
 from shared.db.session import research_db_path
 
 NASDAQ100_URL = "https://en.wikipedia.org/wiki/Nasdaq-100"
+SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +83,8 @@ def main() -> None:
                 sleep_seconds=args.sleep,
             )
             print(f"[us-ingest] prices_daily_us rows upserted={rows}")
+            filled = backfill_listed_at(conn)
+            print(f"[us-ingest] listed_at backfilled for {filled} tickers")
 
         if not args.skip_financials:
             rows = _download_financials(
@@ -94,29 +97,84 @@ def main() -> None:
     print("[us-ingest] done")
 
 
+def backfill_listed_at(conn: sqlite3.Connection) -> int:
+    """Set stocks_us.listed_at = first available price date where NULL.
+
+    The engine's point-in-time universe gate reads ``listed_at <= as_of``; with
+    it NULL, a post-IPO name (e.g. ABNB listed 2020) would be 'in' a 2010
+    universe. It gets dropped later for lack of price data, but making the gate
+    real keeps the universe honest at selection time."""
+    cur = conn.execute(
+        """
+        UPDATE stocks_us
+        SET listed_at = (
+            SELECT MIN(p.date) FROM prices_daily_us p WHERE p.ticker = stocks_us.ticker
+        )
+        WHERE listed_at IS NULL
+          AND EXISTS (SELECT 1 FROM prices_daily_us p WHERE p.ticker = stocks_us.ticker)
+        """
+    )
+    conn.commit()
+    return cur.rowcount
+
+
 def _resolve_universe(args: argparse.Namespace) -> list[USStock]:
     if args.tickers_file is not None:
         return [USStock(ticker=ticker, name=ticker) for ticker in _load_tickers_file(args.tickers_file)]
     if args.universe == "NASDAQ100":
         return _fetch_nasdaq100_members()
+    if args.universe == "SP500":
+        return _fetch_sp500_members()
     raise ValueError(f"Unsupported US universe: {args.universe}")
 
 
 def _fetch_nasdaq100_members() -> list[USStock]:
+    return _fetch_index_members(NASDAQ100_URL, exchange="NASDAQ", min_rows=90, label="NASDAQ100")
+
+
+def _fetch_sp500_members() -> list[USStock]:
+    """S&P500 구성종목 중 아직 stocks_us에 없는 신규 티커만 반환.
+
+    _upsert_stocks가 conflict 시 exchange를 덮어쓰므로, 겹치는 NASDAQ100 종목을
+    'SP500'로 뒤집어 엔진의 NASDAQ100 유니버스(exchange='NASDAQ')를 깨지 않도록
+    이미 적재된 티커는 그대로 두고 새 이름만 exchange='SP500'로 추가한다.
+    """
+    members = _fetch_index_members(SP500_URL, exchange="SP500", min_rows=400, label="SP500")
+    existing = _existing_us_tickers()
+    fresh = [s for s in members if s.ticker not in existing]
+    print(f"[us-ingest] SP500 members={len(members)} 신규(미적재)={len(fresh)}")
+    return fresh
+
+
+def _existing_us_tickers() -> set[str]:
+    try:
+        with sqlite3.connect(research_db_path) as conn:
+            if not conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='stocks_us'"
+            ).fetchone():
+                return set()
+            return {r[0] for r in conn.execute("SELECT ticker FROM stocks_us")}
+    except Exception:
+        return set()
+
+
+def _fetch_index_members(
+    url: str, *, exchange: str, min_rows: int, label: str
+) -> list[USStock]:
     try:
         import certifi
         import requests
 
         response = requests.get(
-            NASDAQ100_URL,
-            headers={"User-Agent": "Q-Lab/1.0 NASDAQ100 downloader"},
+            url,
+            headers={"User-Agent": f"Q-Lab/1.0 {label} downloader"},
             timeout=20,
             verify=certifi.where(),
         )
         response.raise_for_status()
         tables = pd.read_html(StringIO(response.text))
     except Exception as exc:
-        raise RuntimeError(f"NASDAQ100 constituent lookup failed: {exc}") from exc
+        raise RuntimeError(f"{label} constituent lookup failed: {exc}") from exc
 
     for table in tables:
         if table.empty:
@@ -143,14 +201,15 @@ def _fetch_nasdaq100_members() -> list[USStock]:
                 USStock(
                     ticker=ticker,
                     name=str(row[name_col]).strip() if name_col is not None else ticker,
+                    exchange=exchange,
                     sector=_optional_text(row[sector_col]) if sector_col is not None else None,
                     industry=_optional_text(row[industry_col]) if industry_col is not None else None,
                 )
             )
-        if len(stocks) >= 90:
+        if len(stocks) >= min_rows:
             return sorted(stocks, key=lambda item: item.ticker)
 
-    raise RuntimeError("NASDAQ100 constituent table was not found in the source page.")
+    raise RuntimeError(f"{label} constituent table was not found in the source page.")
 
 
 def _create_us_tables(conn: sqlite3.Connection) -> None:
@@ -508,7 +567,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Download NASDAQ daily prices and basic financials into research.db."
     )
-    parser.add_argument("--universe", choices=["NASDAQ100"], default="NASDAQ100")
+    parser.add_argument("--universe", choices=["NASDAQ100", "SP500"], default="NASDAQ100")
     parser.add_argument("--years", type=int, default=10)
     parser.add_argument("--since", type=_parse_date, default=None)
     parser.add_argument("--until", type=_parse_date, default=None)

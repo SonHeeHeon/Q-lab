@@ -642,6 +642,16 @@ class _MetricsGrid extends StatelessWidget {
           color: Colors.deepPurple,
           icon: Icons.swap_horiz,
         ),
+      // 세후(after_tax=true) 런에서만 등장 — 구 런/세전 런은 필드 자체가 없거나
+      // 0이므로 타일을 만들지 않는다 (null-safe, 크래시 없음).
+      if (metrics.totalTaxPaid != null && metrics.totalTaxPaid! > 0)
+        _MetricTile(
+          label: '세금 합계',
+          value: '₩${NumberFormat('#,##0').format(metrics.totalTaxPaid)}',
+          hint: '거래세 + 과세 ETF 양도차익세 15.4%',
+          color: Colors.deepOrange,
+          icon: Icons.receipt_long_outlined,
+        ),
     ];
 
     return GridView.count(

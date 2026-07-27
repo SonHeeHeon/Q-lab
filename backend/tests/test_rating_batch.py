@@ -1,14 +1,17 @@
-"""등급 배치 러너 테스트 (Phase T4): EOD/인트라데이, 임시 service.db 사용.
+"""등급 배치 러너 테스트 (Phase T4, 2-슬리브 T10): EOD/인트라데이, 임시 service.db 사용.
 
 compute_buy_ratings/resolve_rating_strategy는 합성 결과로 monkeypatch하고,
 KIS 브로커는 계좌별 콜백을 주는 페이크로 대체한다. 실제 data/service.db는
 절대 건드리지 않는다 — 전부 in-memory SQLite(``service_sessionmaker``)로 돈다.
+``get_universe``/``latest_research_price_date``(ETF_KR 유니버스 유도)도
+실제 research.db를 절대 건드리지 않도록 항상 monkeypatch한다.
 """
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -20,9 +23,12 @@ from backend.app.schemas.portfolio import (
     PortfolioSummary,
     PositionResponse,
 )
-from shared.db.models import PositionRating, Setting
+from shared.db.models import PositionRating, Setting, StockRating
 from shared.domain.account import AccountType, BrokerType
 from shared.domain.strategy import StrategyDefinition
+
+
+ETF_STRATEGY_NAME = "etf_rotation_kr"  # == settings.DEFAULT_ETF_STRATEGY_NAME
 
 
 def _strategy(**overrides) -> StrategyDefinition:
@@ -39,6 +45,29 @@ def _strategy(**overrides) -> StrategyDefinition:
     )
     payload.update(overrides)
     return StrategyDefinition.model_validate(payload)
+
+
+def _etf_strategy(**overrides) -> StrategyDefinition:
+    payload = dict(
+        name=ETF_STRATEGY_NAME,
+        description="etf sleeve tests",
+        universe="ETF_KR",
+        rebalance_freq="MONTHLY",
+        factors=[],
+        filters=[],
+        top_n=3,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 12, 31),
+    )
+    payload.update(overrides)
+    return StrategyDefinition.model_validate(payload)
+
+
+def _default_resolve_rating_strategy(name):
+    """주식/ETF 슬리브를 이름으로 구분해 반환하는 기본 fake (개별 테스트에서 override 가능)."""
+    if name == ETF_STRATEGY_NAME:
+        return _etf_strategy(), None
+    return _strategy(), None
 
 
 def _position(
@@ -107,8 +136,26 @@ class _FakeTossClient:
         return False
 
 
+DEFAULT_ETF_CODES = ["069500", "091160"]
+
+
 def _fake_compute_buy_ratings(strategy, extra_codes=(), *, as_of=None, db_path=None):
-    del extra_codes, as_of, db_path  # 합성 결과라 입력은 참고하지 않는다.
+    del extra_codes, as_of, db_path  # 합성 결과라 입력은 참고하지 않는다(기본 fake).
+    if strategy.universe == "ETF_KR":
+        ratings = [
+            BuyRating(
+                code=code, status="OK", buy_grade="NEUTRAL",
+                score=1.0 - idx * 0.1, percentile=0.5, weakest_group=None,
+            )
+            for idx, code in enumerate(DEFAULT_ETF_CODES)
+        ]
+        return BuyRatingsResult(
+            as_of="2026-07-24",
+            strategy_name=strategy.name,
+            universe_size=len(ratings),
+            ratings=ratings,
+            warnings=[],
+        )
     universe_ratings = [
         BuyRating(
             code="000001", status="OK", buy_grade="STRONG_BUY",
@@ -142,9 +189,20 @@ def _patch_common(monkeypatch, service_sessionmaker):
     monkeypatch.setattr(rating_batch, "service_session", service_sessionmaker)
     monkeypatch.setattr(rating_batch, "compute_buy_ratings", _fake_compute_buy_ratings)
     monkeypatch.setattr(
-        rating_batch, "resolve_rating_strategy", lambda name: (_strategy(), None)
+        rating_batch, "resolve_rating_strategy", _default_resolve_rating_strategy
     )
     monkeypatch.setattr(rating_batch, "TossRestClient", _FakeTossClient)
+    # get_universe/latest_research_price_date는 실제 research.db(sqlite3 직결)를
+    # 건드리므로 항상 monkeypatch한다 — ETF_KR 유니버스는 기본적으로
+    # DEFAULT_ETF_CODES를 반환한다(개별 테스트에서 override 가능).
+    monkeypatch.setattr(
+        rating_batch, "latest_research_price_date", lambda: date(2026, 7, 24)
+    )
+    monkeypatch.setattr(
+        rating_batch,
+        "get_universe",
+        lambda universe, as_of=None, db_path=None: list(DEFAULT_ETF_CODES),
+    )
     return service_sessionmaker
 
 
@@ -169,7 +227,8 @@ async def test_eod_upserts_stock_and_position_ratings(monkeypatch):
 
     summary = await rating_batch.run_rating_eod()
 
-    assert summary["stock_ratings_stored"] == 3  # universe(2) + extra(1)
+    # stock: universe(2) + extra(1) = 3, etf: DEFAULT_ETF_CODES(2) = 2 -> 합계 5.
+    assert summary["stock_ratings_stored"] == 5
     assert summary["position_ratings_stored"] == 2
     assert summary["error_count"] == 0
 
@@ -185,7 +244,7 @@ async def test_eod_upserts_stock_and_position_ratings(monkeypatch):
     assert position_rows["005930"]["reason"]["rule"] == "STOP_LOSS"
 
     latest = await store.latest_runs()
-    assert latest["EOD"]["stored_count"] == 3
+    assert latest["EOD"]["stored_count"] == 5
     assert latest["EOD"]["error_count"] == 0
 
 
@@ -223,6 +282,194 @@ async def test_eod_scoped_delete_preserves_failed_account_rows(monkeypatch):
     position_rows = {row["code"]: row for row in await store.get_position_ratings()}
     assert position_rows["999999"]["account_key"] == "ISA"
     assert position_rows["999999"]["sell_grade"] == "HOLD"  # 보존됨, 삭제되지 않음
+
+
+# --- T10 (a) HEADLINE: ETF 슬리브가 주식 패스로 인해 클로버링되지 않음 -----------
+
+async def test_eod_etf_sleeve_does_not_clobber_existing_etf_rating(monkeypatch):
+    # 사전 시딩: 069500 행이 ETF 전략명으로 이미 저장돼 있다(예: 이전 배치·on-demand).
+    async with rating_batch.service_session() as session:
+        session.add(
+            StockRating(
+                code="069500",
+                status="OK",
+                buy_grade="BUY",
+                score=0.8,
+                percentile=0.9,
+                weakest_group=None,
+                strategy_name=ETF_STRATEGY_NAME,
+                as_of=date(2026, 7, 20),
+                updated_at=datetime(2026, 7, 20, 19, 0, 0),
+            )
+        )
+        await session.commit()
+
+    # 브로커는 주식 1종목 + ETF 1종목을 보유한다 — 069500(ETF)이 held_codes에
+    # 들어가 stock extras 후보가 되므로, 차감 로직이 없으면 클로버링된다.
+    _install_kis(
+        monkeypatch,
+        {
+            AccountType.PAPER: _portfolio(
+                [_position("000001", unrealized_pl_rate=5.0)], nav=500_000.0
+            ),
+            AccountType.REAL: _portfolio(
+                [_position("069500", unrealized_pl_rate=3.0)], nav=500_000.0
+            ),
+        },
+    )
+
+    etf_codes = ["069500"]
+    monkeypatch.setattr(
+        rating_batch,
+        "get_universe",
+        lambda universe, as_of=None, db_path=None: list(etf_codes),
+    )
+
+    def _fake_compute(strategy, extra_codes=(), *, as_of=None, db_path=None):
+        extra_list = list(extra_codes)
+        if strategy.universe == "ETF_KR":
+            assert extra_list == [], "ETF sleeve pass must not receive extras"
+            ratings = [
+                BuyRating(
+                    code="069500", status="OK", buy_grade="STRONG_BUY",
+                    score=1.0, percentile=1.0, weakest_group=None,
+                ),
+            ]
+            return BuyRatingsResult(
+                as_of="2026-07-24", strategy_name=strategy.name,
+                universe_size=len(ratings), ratings=ratings, warnings=[],
+            )
+        # 클로버링 회귀 방어: ETF 코드가 주식 패스 extras로 새면 여기서 즉시 실패한다.
+        assert "069500" not in extra_list, (
+            "stock pass must not receive ETF codes as extras (clobbering bug)"
+        )
+        ratings = [
+            BuyRating(
+                code="000001", status="OK", buy_grade="STRONG_BUY",
+                score=1.0, percentile=0.9, weakest_group=None,
+            ),
+        ]
+        return BuyRatingsResult(
+            as_of="2026-07-24", strategy_name=strategy.name,
+            universe_size=len(ratings), ratings=ratings, warnings=[],
+        )
+
+    monkeypatch.setattr(rating_batch, "compute_buy_ratings", _fake_compute)
+
+    await rating_batch.run_rating_eod()
+
+    stock_rows = {
+        row["code"]: row for row in await store.get_stock_ratings(["000001", "069500"])
+    }
+    # 069500은 NO_DATA로 덮어써지지 않고 ETF 전략명을 그대로(또는 재채점 후에도) 유지한다.
+    assert stock_rows["069500"]["strategy_name"] == ETF_STRATEGY_NAME
+    assert stock_rows["069500"]["status"] == "OK"
+    assert stock_rows["069500"]["buy_grade"] == "STRONG_BUY"  # rank1 remap
+    assert stock_rows["000001"]["strategy_name"] == "rating_batch_test"
+
+
+# --- T10 (b) rank remap: 순위 기반 등급/백분위 -----------------------------------
+
+def test_remap_etf_grades_rank_based_grades_and_percentile():
+    ratings = [
+        BuyRating(
+            code=f"E{i}", status="OK", buy_grade=None,
+            score=10.0 - i, percentile=None, weakest_group=None,
+        )
+        for i in range(10)
+    ]
+    result = BuyRatingsResult(
+        as_of="2026-07-24", strategy_name=ETF_STRATEGY_NAME,
+        universe_size=10, ratings=ratings, warnings=[],
+    )
+
+    remapped = rating_batch.remap_etf_grades(result, top_n=3)
+
+    grades = {r.code: r.buy_grade for r in remapped.ratings}
+    percentiles = {r.code: r.percentile for r in remapped.ratings}
+
+    assert grades["E0"] == "STRONG_BUY"  # rank1 (최고 score)
+    assert grades["E1"] == "BUY"         # rank2
+    assert grades["E2"] == "BUY"         # rank3
+    assert grades["E3"] == "NEUTRAL"     # rank4
+    assert grades["E4"] == "NEUTRAL"     # rank5
+    assert grades["E5"] == "AVOID"       # rank6
+    assert grades["E9"] == "AVOID"       # rank10
+
+    assert percentiles["E0"] == 1.0
+    assert percentiles["E9"] == pytest.approx(0.1)
+
+
+# --- T10 (c) positions: 슬리브별 percentile 맵 라우팅 + 단일 delete/upsert -------
+
+async def test_eod_positions_use_own_sleeve_percentile_map(monkeypatch):
+    _install_kis(
+        monkeypatch,
+        {
+            AccountType.PAPER: _portfolio(
+                [
+                    _position("000002", unrealized_pl_rate=5.0),  # 주식(기본 fake percentile 0.1)
+                    _position("069500", unrealized_pl_rate=5.0),  # ETF(기본 fake, remap 후 rank1)
+                ],
+                nav=500_000.0,
+            ),
+        },
+    )
+    monkeypatch.setattr(
+        rating_batch,
+        "get_universe",
+        lambda universe, as_of=None, db_path=None: list(DEFAULT_ETF_CODES),
+    )
+
+    delete_spy = AsyncMock(side_effect=store.delete_position_ratings_for_accounts)
+    upsert_spy = AsyncMock(side_effect=store.upsert_position_ratings)
+    monkeypatch.setattr(store, "delete_position_ratings_for_accounts", delete_spy)
+    monkeypatch.setattr(store, "upsert_position_ratings", upsert_spy)
+
+    await rating_batch.run_rating_eod()
+
+    delete_spy.assert_awaited_once()
+    upsert_spy.assert_awaited_once()
+
+    position_rows = {row["code"]: row for row in await store.get_position_ratings()}
+    # 000002: 주식 슬리브 percentile 0.1 (기본 fake) -> SELL
+    assert position_rows["000002"]["sell_grade"] == "SELL"
+    assert position_rows["000002"]["reason"]["percentile"] == 0.1
+    # 069500: ETF 슬리브, remap 후 rank1(score 최고) -> percentile 1.0 -> KEEP
+    assert position_rows["069500"]["sell_grade"] == "KEEP"
+    assert position_rows["069500"]["reason"]["rule"] == "SCORE_PERCENTILE"
+    assert position_rows["069500"]["reason"]["percentile"] == 1.0
+
+
+# --- T10 (d) ETF 전략 파일 누락 -> ETF 패스만 스킵, 주식 패스는 정상 완료 --------
+
+async def test_eod_etf_strategy_missing_file_skips_etf_pass_with_warning(monkeypatch):
+    _install_kis(
+        monkeypatch,
+        {
+            AccountType.PAPER: _portfolio(
+                [_position("000001", unrealized_pl_rate=5.0)], nav=500_000.0
+            ),
+        },
+    )
+
+    def _resolve_missing(name):
+        if name == ETF_STRATEGY_NAME:
+            raise FileNotFoundError(f"{name}.yaml not found")
+        return _strategy(), None
+
+    monkeypatch.setattr(rating_batch, "resolve_rating_strategy", _resolve_missing)
+
+    summary = await rating_batch.run_rating_eod()
+
+    assert summary["etf_strategy"] is None
+    assert any("ETF strategy" in warning for warning in summary["warnings"])
+    assert summary["error_count"] == 0
+
+    # 주식 패스는 정상 완료 — 기본 stock fake의 3개 종목이 그대로 저장된다.
+    stock_rows = await store.get_stock_ratings(["000001", "000002", "005930"])
+    assert {row["code"] for row in stock_rows} == {"000001", "000002", "005930"}
+    assert summary["stock_ratings_stored"] == 3  # etf 패스 스킵 -> stock 3건만
 
 
 # --- INTRADAY: flips to SELL_NOW on breach, leaves other grades unchanged --------

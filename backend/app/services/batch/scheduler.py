@@ -15,10 +15,11 @@ from backend.app.services.batch.daily_report import run_daily_report
 from backend.app.services.batch.data_sync import run_data_sync
 from backend.app.services.batch.proposal_generator import (
     run_proposal_expiry,
-    run_proposal_generation,
+    run_sleeve_proposals,
 )
 from backend.app.services.batch.rating_batch import run_rating_eod, run_rating_intraday
 from backend.app.services.batch.record_nav_snapshot import run_nav_snapshot
+from backend.app.services.batch.toss_order_sync import run_toss_order_sync
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,15 @@ def create_batch_scheduler() -> AsyncIOScheduler:
         max_instances=1,
         coalesce=True,
     )
+    if settings.toss_credentials_configured:
+        scheduler.add_job(
+            run_toss_order_sync,
+            CronTrigger.from_crontab(settings.TOSS_ORDER_SYNC_CRON, timezone=timezone),
+            id="toss_order_sync",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
     scheduler.add_job(
         run_nav_snapshot,
         CronTrigger.from_crontab(settings.NAV_SNAPSHOT_CRON, timezone=timezone),
@@ -69,7 +79,7 @@ def create_batch_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     scheduler.add_job(
-        run_proposal_generation,
+        run_sleeve_proposals,
         CronTrigger.from_crontab(settings.PROPOSAL_CRON, timezone=timezone),
         id="proposal_generation",
         replace_existing=True,

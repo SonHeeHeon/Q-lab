@@ -45,20 +45,33 @@ class AppShell extends ConsumerWidget {
       return Scaffold(
         body: Row(
           children: [
-            NavigationRail(
-              selectedIndex: idx,
-              onDestinationSelected: onTap,
-              labelType: width >= 960
-                  ? NavigationRailLabelType.all
-                  : NavigationRailLabelType.selected,
-              leading: const _AccountBadge(),
-              destinations: [
-                for (final d in navDestinations)
-                  NavigationRailDestination(
-                    icon: Icon(d.icon),
-                    label: Text(d.label),
+            // 창 높이가 낮으면 목적지 수만큼 rail 내부 Column이 넘쳐(RenderFlex
+            // overflow) 노란 줄무늬가 뜬다. 스크롤 가능하게 감싸되 minHeight로
+            // 평소(높이 충분할 때) 레이아웃은 그대로 유지한다.
+            LayoutBuilder(
+              builder: (context, constraints) => SingleChildScrollView(
+                child: ConstrainedBox(
+                  constraints:
+                      BoxConstraints(minHeight: constraints.maxHeight),
+                  child: IntrinsicHeight(
+                    child: NavigationRail(
+                      selectedIndex: idx,
+                      onDestinationSelected: onTap,
+                      labelType: width >= 960
+                          ? NavigationRailLabelType.all
+                          : NavigationRailLabelType.selected,
+                      leading: const _AccountBadge(),
+                      destinations: [
+                        for (final d in navDestinations)
+                          NavigationRailDestination(
+                            icon: Icon(d.icon),
+                            label: Text(d.label),
+                          ),
+                      ],
+                    ),
                   ),
-              ],
+                ),
+              ),
             ),
             const VerticalDivider(width: 1),
             Expanded(child: child),
