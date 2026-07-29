@@ -1,0 +1,26 @@
+name: dc_safe_rotation_kr
+description: >-
+  DC 퇴직연금 안전 슬리브(목표 ~32%, 의무 안전자산 30% + 버퍼) — 허용 채권 ETF
+  (단기채/국고채 3·10년) 모멘텀 상위 2개 월간 로테이션. 금리 국면 반영.
+universe: ETF_KR_DC_SAFE
+rebalance_freq: MONTHLY
+top_n: 2
+start_date: 2016-07-01
+end_date: 2026-07-01
+
+factors: []
+filters: []
+
+groups:
+  - name: Momentum
+    weight: 1.0
+    factors:
+      - {factor: MOMENTUM_12M, higher_is_better: true}
+      - {factor: MOMENTUM_3M, higher_is_better: true}
+
+min_groups: 1
+winsor_pct: 0.01
+clip_z: 3.0
+use_regime: false
+abs_momentum_gate: false
+abs_momentum_factor: MOMENTUM_12M

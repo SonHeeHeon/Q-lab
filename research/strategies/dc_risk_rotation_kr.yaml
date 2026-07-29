@@ -1,0 +1,33 @@
+name: dc_risk_rotation_kr
+description: >-
+  DC 퇴직연금 위험 슬리브(목표 ~68%) — KIS 퇴직연금 허용 위험 ETF(국내/미국지수/
+  선진국/중국/리츠) 12M/3M 듀얼 모멘텀 상위 3개 월간 로테이션. 과세이연 계좌라
+  세전 백테스트가 정확. 안전 슬리브(dc_safe_rotation_kr)와 68/32 합성이 기본형.
+universe: ETF_KR_DC_RISK
+rebalance_freq: MONTHLY
+top_n: 3
+start_date: 2016-07-01
+end_date: 2026-07-01
+
+factors: []
+# allowlist가 이미 대표 ETF 큐레이션이라 유동성 필터 불필요(초기 구간 유니버스
+# 고갈 방지).
+filters: []
+
+groups:
+  - name: Momentum
+    weight: 1.0
+    factors:
+      - {factor: MOMENTUM_12M, higher_is_better: true}
+      - {factor: MOMENTUM_3M, higher_is_better: true}
+
+min_groups: 1
+winsor_pct: 0.01
+clip_z: 3.0
+use_regime: false
+
+# 기본판은 게이트 OFF. 절대 모멘텀 게이트(자기 12M 모멘텀<=0이면 미매수·현금 보유)는
+# abs_momentum_gate: true 로 켜서 백테스트 비교 가능. 튜닝된 개인 설정은
+# research/strategies/private/ (gitignore) 에 두면 이 파일을 덮는다.
+abs_momentum_gate: false
+abs_momentum_factor: MOMENTUM_12M
