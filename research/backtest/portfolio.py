@@ -157,6 +157,47 @@ def blend_curves(
     return [(idx.date(), float(base_nav * value)) for idx, value in blended.items()]
 
 
+def blend_curves_schedule(
+    curves: list[pd.Series],
+    schedule: list[tuple[Date, list[float]]],
+    *,
+    rebalance: RebalanceFreq | None = "MONTHLY",
+    base_nav: float = DEFAULT_BASE_NAV,
+) -> list[tuple[Date, float]]:
+    """시점별 목표비중 스케줄(글라이드패스)로 곡선 합성.
+
+    ``schedule``: [(적용 시작일, weights)] 날짜 오름차순. 각 구간은
+    ``blend_curves``의 주기 리셋 방식으로 합성하고 구간 경계에서 NAV를
+    곱셈 체인한다. 첫 구간 시작 전 데이터는 버린다. 구간 수익률은 구간
+    첫 관측치 기준이라 ``rebalance=None``(buy-and-hold)은 지원하지 않는다.
+    """
+    if not schedule:
+        raise ValueError("schedule must not be empty.")
+    if rebalance is None:
+        raise ValueError("blend_curves_schedule requires a rebalance frequency.")
+    starts = [pd.Timestamp(day) for day, _ in schedule]
+    if starts != sorted(starts):
+        raise ValueError("schedule must be sorted by date.")
+
+    out: list[tuple[Date, float]] = []
+    carry = 1.0
+    for i, (day, weights) in enumerate(schedule):
+        seg_start = pd.Timestamp(day)
+        seg_end = pd.Timestamp(schedule[i + 1][0]) if i + 1 < len(schedule) else None
+        segment = []
+        for curve in curves:
+            sliced = curve[curve.index >= seg_start]
+            if seg_end is not None:
+                sliced = sliced[sliced.index < seg_end]
+            segment.append(sliced)
+        points = blend_curves(segment, weights, rebalance=rebalance, base_nav=1.0)
+        if not points:
+            continue
+        out.extend((d, base_nav * carry * nav) for d, nav in points)
+        carry *= points[-1][1]
+    return out
+
+
 @dataclass(frozen=True, slots=True)
 class PortfolioResult:
     combined_metrics: Metrics
