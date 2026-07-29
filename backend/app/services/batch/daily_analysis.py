@@ -49,6 +49,9 @@ SLEEVE_INSIGHT_STRATEGIES: list[tuple[str, str | None]] = [
     ("kr_etf", "etf_rotation_kr"),
     ("us_stock", "us_stock_v1"),
     ("us_etf", "etf_rotation_us"),
+    # DC 퇴직연금 위험 슬리브(자문 모드 — 월 1회 수동 리밸런스 참고).
+    # 안전 슬리브는 단기채권 고정 보유 채택이라 랭킹 미노출(A/B: 로테이션 기각).
+    ("dc_risk", "dc_risk_rotation_kr"),
 ]
 
 
