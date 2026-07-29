@@ -260,6 +260,9 @@ class USCapitalGainsTaxModel(TaxModel):
 
 _US_TAX_UNIVERSES = {"NASDAQ100", "US_LARGE", "US_ALL", "SP1500", "ETF_US"}
 
+# DC 퇴직연금 유니버스: 계좌 내 매매차익 과세이연 → 세후 모드에서도 세금 없음.
+_TAX_DEFERRED_UNIVERSES = {"ETF_KR_DC_RISK", "ETF_KR_DC_SAFE"}
+
 
 def default_tax_model_for_universe(universe: str) -> TaxModel | None:
     """Default ``TaxModel`` for a backtest universe.
@@ -268,8 +271,12 @@ def default_tax_model_for_universe(universe: str) -> TaxModel | None:
     universes realize zero tax anyway (``classify_kr_instrument`` returns
     ``"stock"``), so this is a no-op cost for them and only matters for
     ``ETF_KR``. US universes get the annual-netting capital-gains model
-    (fresh instance per call — it is stateful across a run).
+    (fresh instance per call — it is stateful across a run). DC pension
+    universes are tax-deferred, so they get ``None`` (pre-tax is exact).
     """
-    if universe.upper() in _US_TAX_UNIVERSES:
+    normalized = universe.upper()
+    if normalized in _TAX_DEFERRED_UNIVERSES:
+        return None
+    if normalized in _US_TAX_UNIVERSES:
         return USCapitalGainsTaxModel()
     return TaxModel()

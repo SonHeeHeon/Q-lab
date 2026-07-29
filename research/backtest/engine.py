@@ -40,6 +40,7 @@ from research.factors.value import calculate_pbr, calculate_per, calculate_psr
 from research.factors.volume import calculate_trading_days_30d, calculate_volume_spike
 from research.factors.volatility import calculate_named_beta, calculate_named_volatility
 from research.factors.fundamental_us import _FUNDAMENTAL_US_FACTORS
+from research.universe.dc_kis import load_dc_allowlist
 from research.universe.kosdaq150 import KOSDAQ150_CODES_FILE
 from research.universe.kospi200 import DEFAULT_CODES_FILE
 from shared.db.session import research_db_path
@@ -611,6 +612,10 @@ def get_universe(
     elif normalized == "ETF_KR":
         market_clause = "AND market = ?"
         params.append("ETF")
+    elif normalized in {"ETF_KR_DC_RISK", "ETF_KR_DC_SAFE"}:
+        # DC 퇴직연금 유니버스: KR 상장 ETF ∩ KIS allowlist(위험/안전 분류).
+        market_clause = "AND market = ?"
+        params.append("ETF")
     elif normalized == "KOSPI_TOP100":
         return _kospi_top_n_universe(as_of=as_of, db_path=path, top_n=100)
     elif normalized == "KOSPI_ALL":
@@ -632,8 +637,12 @@ def get_universe(
     """
     with sqlite3.connect(path) as conn:
         rows = conn.execute(sql, params).fetchall()
-    if normalized == "ETF_KR":
+    if normalized.startswith("ETF_KR"):
         rows = [row for row in rows if not _is_leverage_or_inverse_etf(row[1])]
+    if normalized in {"ETF_KR_DC_RISK", "ETF_KR_DC_SAFE"}:
+        allow = load_dc_allowlist()
+        wanted = "risk" if normalized.endswith("RISK") else "safe"
+        rows = [row for row in rows if allow.get(row[0]) == wanted]
     return normalize_codes(row[0] for row in rows)
 
 

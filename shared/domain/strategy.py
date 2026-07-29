@@ -57,6 +57,8 @@ class StrategyDefinition(BaseModel):
         "NASDAQ100",
         "US_LARGE",
         "ETF_KR",
+        "ETF_KR_DC_RISK",
+        "ETF_KR_DC_SAFE",
         "ETF_US",
         "CUSTOM",
     ]

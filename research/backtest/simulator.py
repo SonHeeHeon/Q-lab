@@ -24,7 +24,7 @@ US_COST_MODEL = CostModel(commission_rate=0.001, sell_tax_rate=0.0, slippage_bps
 KR_ETF_COST_MODEL = CostModel(commission_rate=0.00015, sell_tax_rate=0.0, slippage_bps=10.0)
 
 _US_UNIVERSES = {"NASDAQ100", "US_LARGE", "US_ALL", "SP1500", "ETF_US"}
-_KR_ETF_UNIVERSES = {"ETF_KR"}
+_KR_ETF_UNIVERSES = {"ETF_KR", "ETF_KR_DC_RISK", "ETF_KR_DC_SAFE"}
 
 
 def default_cost_model_for_universe(universe: str) -> CostModel:
