@@ -39,9 +39,6 @@ from research.backtest.portfolio import (  # noqa: E402
 )
 from research.backtest.tax_kr import default_tax_model_for_universe  # noqa: E402
 
-START = date(2016, 7, 1)
-END = date(2026, 7, 1)
-
 SLEEVES = [
     ("KR주식", "qlab_alpha_v2"),
     ("KR_ETF", "etf_rotation_kr"),
@@ -63,6 +60,10 @@ def main() -> None:
     parser.add_argument("--max-weight", type=float, default=None,
                         help="슬리브 집중 상한(예: 0.5) — 무제약 쏠림의 실용 대안")
     parser.add_argument("--skip-oos", action="store_true")
+    parser.add_argument("--start", type=date.fromisoformat, default=date(2016, 7, 1))
+    parser.add_argument("--end", type=date.fromisoformat, default=date(2026, 7, 1))
+    parser.add_argument("--eval-weights", default=None,
+                        help="쉼표 4비중(예: 0.1,0,0.5,0.4) — 지정 비중 평가 행 추가")
     args = parser.parse_args()
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -79,7 +80,7 @@ def main() -> None:
     solo_rows = []
     for label, name in SLEEVES:
         strat = load_strategy(name).model_copy(
-            update={"start_date": START, "end_date": END}
+            update={"start_date": args.start, "end_date": args.end}
         )
         strategies.append(strat)
         result = run_backtest(
@@ -122,6 +123,16 @@ def main() -> None:
     insample = blended_metrics(insample_w)
     print(f"[mix] insample w={[round(x,3) for x in insample_w]}: {insample}", flush=True)
 
+    # 지정 비중 평가(예: 사용자 확정 비중) — 탐색이 아니라 단순 합성 측정
+    eval_w: list[float] | None = None
+    eval_m: dict | None = None
+    if args.eval_weights:
+        eval_w = [float(x) for x in args.eval_weights.split(",")]
+        if len(eval_w) != 4:
+            raise SystemExit("--eval-weights는 4개 비중이어야 함")
+        eval_m = blended_metrics(eval_w)
+        print(f"[mix] eval w={eval_w}: {eval_m}", flush=True)
+
     # 4) OOS(rolling 5Y train / 1Y test — 채택 근거)
     oos: dict = {"weights": None}
     if not args.skip_oos:
@@ -136,7 +147,7 @@ def main() -> None:
 
     # 5) 비교표 + 저장
     lines = ["# 개인 계좌 4슬리브 최적 비중 (세후·KRW 관점)", "",
-             f"- 구간: {START} ~ {END} · 분기 리밸런스 · 목적 Calmar",
+             f"- 구간: {args.start} ~ {args.end} · 분기 리밸런스 · 목적 Calmar",
              "- 세후: KR 과세 ETF 15.4% per-sell + US 양도세 연간통산(공제 250만, 22%)",
              "- KRW 관점: US 슬리브 곡선에 USDKRW 반영(환수익 포함)", "",
              "## 슬리브 단독 (세후·KRW)",
@@ -154,6 +165,8 @@ def main() -> None:
 
     lines.append(_row("균등", [0.25] * 4, equal))
     lines.append(_row("인샘플 최적(참고)", insample_w, insample))
+    if eval_w is not None and eval_m is not None:
+        lines.append(_row("지정 비중", eval_w, eval_m))
     if oos.get("weights"):
         oos_m = blended_metrics(oos["weights"])
         lines.append(_row(f"**OOS 채택({oos['folds']}folds)**", oos["weights"], oos_m))
