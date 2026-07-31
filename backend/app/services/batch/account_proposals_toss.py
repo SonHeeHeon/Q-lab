@@ -129,7 +129,7 @@ async def _run_one_sleeve(
         )
 
     drafts = [d for d in drafts if d.qty > 0 and d.last_price > 0]
-    inserted = await _insert_proposals(
+    inserted, batch_id = await _insert_proposals(
         drafts, strategy=strategy, account=AccountType.REAL, as_of=as_of,
         market="US",
     )

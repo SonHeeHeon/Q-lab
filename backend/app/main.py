@@ -156,10 +156,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             settings.ALERT_ORDER_IS_MOCK,
         )
 
+    # 텔레그램 승인 트랙 — 토큰/챗ID 미설정이면 러너가 스스로 종료(로그 1줄).
+    from backend.app.services.notify.telegram_commands import TelegramCommandRunner
+
+    telegram_task = asyncio.create_task(
+        TelegramCommandRunner().run_forever(), name="telegram-commands"
+    )
+    app.state.telegram_commands_task = telegram_task
+
     try:
         yield
     finally:
         set_upstream_client(None)
+        if not telegram_task.done():
+            telegram_task.cancel()
+            try:
+                await telegram_task
+            except asyncio.CancelledError:
+                pass
         if alert_monitor is not None:
             await alert_monitor.stop()
         if order_tracker is not None:

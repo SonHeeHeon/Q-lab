@@ -650,7 +650,7 @@ async def run_proposal_generation(
             }
         )
 
-    inserted = await _insert_proposals(
+    inserted, batch_id = await _insert_proposals(
         drafts, strategy=strategy, account=account, as_of=as_of,
     )
     summary = {
@@ -668,7 +668,7 @@ async def run_proposal_generation(
         summary["unclassified_skipped"] = unclassified_skipped
     logger.info("proposal generation %s", summary)
     if send_telegram and inserted:
-        await _notify(drafts, summary)
+        await _notify(drafts, summary, batch_id)
     return summary
 
 
@@ -733,7 +733,7 @@ async def run_carryover_generation(
         drafts, cap=ramp_cap_value, sleeve_nav=sleeve_nav,
         holdings_value=scoped_value,
     )
-    inserted = await _insert_proposals(
+    inserted, batch_id = await _insert_proposals(
         drafts, strategy=strategy, account=account, as_of=as_of,
     )
     summary = {
@@ -747,7 +747,7 @@ async def run_carryover_generation(
     }
     logger.info("carryover generation %s", summary)
     if send_telegram and inserted:
-        await _notify(drafts, summary)
+        await _notify(drafts, summary, batch_id)
     return summary
 
 
@@ -967,11 +967,12 @@ async def _insert_proposals(
     as_of: Date,
     strategy_name: str | None = None,
     market: str = "KR",
-) -> int:
-    """제안 저장 — strategy 없이 표시용 이름만으로도 저장 가능(hold 슬리브),
-    market 파라미터로 US 제안(Toss) 지원. 기존 콜사이트는 무변경."""
+) -> tuple[int, str | None]:
+    """제안 저장 → (저장 건수, batch_id) — batch_id는 텔레그램 인라인
+    키보드(제안 ID 조회)용. strategy 없이 표시용 이름만으로도 저장 가능
+    (hold 슬리브), market 파라미터로 US 제안(Toss) 지원."""
     if not drafts:
-        return 0
+        return 0, None
     name = strategy_name or (strategy.name if strategy else None)
     if not name:
         raise ValueError("strategy or strategy_name is required")
@@ -1017,7 +1018,7 @@ async def _insert_proposals(
             )
             inserted += 1
         await session.commit()
-    return inserted
+    return inserted, (batch_id if inserted else None)
 
 
 def _next_business_morning(as_of: Date) -> datetime:
@@ -1046,16 +1047,48 @@ async def run_proposal_expiry() -> int:
     return expired
 
 
-async def _notify(drafts: list[ProposalDraft], summary: dict) -> None:
+async def proposal_keyboard(batch_id: str) -> dict | None:
+    """배치의 PROPOSED 제안으로 인라인 키보드 구성 (텔레그램 승인 트랙).
+
+    callback_data: ap:{id}=승인(2단계 확인으로 진입) / rj:{id}=거절 /
+    apall·rjall:{batch}=일괄(역시 확인 단계). 남은 제안이 없으면 None.
+    """
+    async with service_session() as session:
+        rows = (
+            await session.execute(
+                select(OrderProposal.id, OrderProposal.stock_code, OrderProposal.side)
+                .where(OrderProposal.batch_id == batch_id)
+                .where(OrderProposal.status == "PROPOSED")
+                .order_by(OrderProposal.id)
+            )
+        ).all()
+    if not rows:
+        return None
+    keyboard: list[list[dict]] = []
+    for pid, code, side in rows[:10]:
+        keyboard.append([
+            {"text": f"✅ {side} {code}", "callback_data": f"ap:{pid}"},
+            {"text": "❌ 거절", "callback_data": f"rj:{pid}"},
+        ])
+    keyboard.append([
+        {"text": "✅ 모두 승인", "callback_data": f"apall:{batch_id}"},
+        {"text": "❌ 모두 거절", "callback_data": f"rjall:{batch_id}"},
+    ])
+    return {"inline_keyboard": keyboard}
+
+
+async def _notify(
+    drafts: list[ProposalDraft], summary: dict, batch_id: str | None = None
+) -> None:
     try:
-        from backend.app.services.notify.telegram import send_markdown
+        from backend.app.services.notify.telegram import TelegramClient
 
         sells = [d for d in drafts if d.side == "SELL"]
         buys = [d for d in drafts if d.side == "BUY"]
         lines = [
             f"*오늘의 매매 제안* ({summary['proposal_date']}, {summary['mode']})",
             f"전략 {summary['strategy']} · 계좌 {summary['account']}",
-            f"매도 {len(sells)}건 / 매수 {len(buys)}건 — 앱에서 승인 필요",
+            f"매도 {len(sells)}건 / 매수 {len(buys)}건 — 앱 또는 아래 버튼으로 승인",
         ]
         for draft in drafts[:10]:
             rule = draft.reason.get("rule", "")
@@ -1064,6 +1097,7 @@ async def _notify(drafts: list[ProposalDraft], summary: dict) -> None:
             )
         if len(drafts) > 10:
             lines.append(f"· … 외 {len(drafts) - 10}건")
-        await send_markdown("\n".join(lines))
+        markup = await proposal_keyboard(batch_id) if batch_id else None
+        await TelegramClient().send_markdown("\n".join(lines), reply_markup=markup)
     except Exception:
         logger.exception("proposal telegram notify failed")

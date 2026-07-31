@@ -117,7 +117,7 @@ async def _run_hold_sleeve(
         code=sleeve["code"], weight=float(sleeve["weight"]), nav=nav,
         positions=positions, prices=prices,
     )
-    inserted = await _insert_proposals(
+    inserted, batch_id = await _insert_proposals(
         drafts, account=account, as_of=as_of,
         strategy_name=f"hold_{sleeve['code']}",
     )

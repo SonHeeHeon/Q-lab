@@ -186,7 +186,9 @@ async def test_insert_skips_duplicate_pending(service_sessionmaker, monkeypatch)
     second = await pg._insert_proposals(
         drafts, strategy=strategy, account=pg.AccountType.PAPER, as_of=date(2026, 7, 13)
     )
-    assert (first, second) == (1, 0)  # 같은 종목·방향 PROPOSED 중복 금지
+    # 반환은 (건수, batch_id) — 같은 종목·방향 PROPOSED 중복 금지
+    assert (first[0], second[0]) == (1, 0)
+    assert first[1] is not None and second[1] is None
 
     async with service_sessionmaker() as session:
         row = (await session.execute(pg.select(OrderProposal))).scalars().one()
@@ -620,7 +622,7 @@ async def test_insert_dedup_is_scoped_per_strategy(service_sessionmaker, monkeyp
         drafts, strategy=strategy_b, account=pg.AccountType.PAPER,
         as_of=date(2026, 7, 13),
     )
-    assert (first, second) == (1, 1)
+    assert (first[0], second[0]) == (1, 1)  # (건수, batch_id) 반환
 
     async with service_sessionmaker() as session:
         rows = (await session.execute(pg.select(OrderProposal))).scalars().all()
