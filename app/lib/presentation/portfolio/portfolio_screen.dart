@@ -696,6 +696,11 @@ class _AccountBanner extends StatelessWidget {
       KisAccount.real => colors.real,
       KisAccount.isa => colors.isa,
       KisAccount.paper => colors.paper,
+      // 연금 계좌 3종은 보라 계열 공통색 (실전/ISA/모의와 즉시 구분)
+      KisAccount.dc ||
+      KisAccount.irp ||
+      KisAccount.pension =>
+        const Color(0xFF9C6ADE),
     };
     return Container(
       width: double.infinity,

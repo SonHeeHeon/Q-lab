@@ -10,9 +10,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'preferences.dart';
 
-/// Active KIS account selection (paper / real / isa). Defaults to paper
-/// for safety.
-enum KisAccountType { paper, real, isa }
+/// Active KIS account selection. Defaults to paper for safety.
+/// dc/irp/pension = 연금 계좌들(2026-07 5계좌 확장 — 미연결이면 조회만 실패).
+enum KisAccountType { paper, real, isa, dc, irp, pension }
 
 /// Theme mode — backed by [persistedThemeModeProvider] under the hood.
 /// Reads return the persisted value; writes funnel through `.set(...)`

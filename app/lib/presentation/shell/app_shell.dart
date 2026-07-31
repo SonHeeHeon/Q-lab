@@ -132,11 +132,18 @@ class _AccountBadge extends ConsumerWidget {
       KisAccountType.real => colors.real,
       KisAccountType.isa => colors.isa,
       KisAccountType.paper => colors.paper,
+      KisAccountType.dc ||
+      KisAccountType.irp ||
+      KisAccountType.pension =>
+        const Color(0xFF9C6ADE),
     };
     final label = switch (account) {
       KisAccountType.real => '실전',
       KisAccountType.isa => 'ISA',
       KisAccountType.paper => '모의',
+      KisAccountType.dc => '퇴직연금DC',
+      KisAccountType.irp => 'IRP',
+      KisAccountType.pension => '연금저축',
     };
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 12),

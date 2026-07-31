@@ -150,6 +150,10 @@ Color _accountColor(BuildContext context, KisAccount account) {
     KisAccount.real => colors.real,
     KisAccount.isa => colors.isa,
     KisAccount.paper => colors.paper,
+    KisAccount.dc ||
+    KisAccount.irp ||
+    KisAccount.pension =>
+      const Color(0xFF9C6ADE),
   };
 }
 

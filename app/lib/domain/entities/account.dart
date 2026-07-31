@@ -7,7 +7,10 @@ library;
 enum KisAccount {
   paper('PAPER'),
   real('REAL'),
-  isa('ISA');
+  isa('ISA'),
+  dc('DC'),
+  irp('IRP'),
+  pension('PENSION');
 
   const KisAccount(this.wire);
   final String wire;
@@ -25,6 +28,9 @@ enum KisAccount {
         KisAccount.paper => '모의',
         KisAccount.real => '실전',
         KisAccount.isa => 'ISA',
+        KisAccount.dc => '퇴직연금DC',
+        KisAccount.irp => 'IRP',
+        KisAccount.pension => '연금저축',
       };
 }
 
