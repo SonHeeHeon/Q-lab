@@ -839,11 +839,14 @@ class BacktestApi {
   Future<BacktestRunResult> runBacktest(
     StrategyDefinitionDraft draft, {
     bool afterTax = false,
+    int rampInMonths = 0,
   }) async {
     final dio = _ref.read(dioProvider);
+    final body = draft.toJson();
+    if (rampInMonths > 0) body['ramp_in_months'] = rampInMonths;
     final res = await dio.post<dynamic>(
       '/api/backtest/run',
-      data: draft.toJson(),
+      data: body,
       queryParameters: afterTax ? {'after_tax': true} : null,
       options: Options(
         receiveTimeout: const Duration(seconds: 300),
@@ -880,11 +883,16 @@ class BacktestApi {
   Future<BacktestRunResult> runRawStrategy(
     Map<String, dynamic> strategy, {
     bool afterTax = false,
+    int rampInMonths = 0,
   }) async {
     final dio = _ref.read(dioProvider);
+    final body = {
+      ...strategy,
+      if (rampInMonths > 0) 'ramp_in_months': rampInMonths,
+    };
     final res = await dio.post<dynamic>(
       '/api/backtest/run',
-      data: strategy,
+      data: body,
       queryParameters: afterTax ? {'after_tax': true} : null,
       options: Options(
         receiveTimeout: const Duration(seconds: 300),

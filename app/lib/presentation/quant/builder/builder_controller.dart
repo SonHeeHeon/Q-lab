@@ -394,11 +394,14 @@ class BuilderNotifier extends Notifier<BuilderState> {
       final api = ref.read(backtestApiProvider);
       // 백테스트랩의 세후(KR) 토글 — 두 실행 경로 모두 ?after_tax로 전달.
       final afterTax = ref.read(afterTaxProvider);
+      final rampMonths = ref.read(rampInMonthsProvider);
       // Grouped presets ("이 공식 그대로 사용") are submitted verbatim —
       // the flat draft can't represent `groups` scoring at all.
       final result = state.isGroupedPresetMode
-          ? await api.runRawStrategy(state.groupedPreset!, afterTax: afterTax)
-          : await api.runBacktest(state.draft, afterTax: afterTax);
+          ? await api.runRawStrategy(state.groupedPreset!,
+              afterTax: afterTax, rampInMonths: rampMonths)
+          : await api.runBacktest(state.draft,
+              afterTax: afterTax, rampInMonths: rampMonths);
       // Cache in the recent-runs map so the detail screen can read equity_curve.
       final cache = ref.read(recentRunResultsProvider);
       ref.read(recentRunResultsProvider.notifier).state = {

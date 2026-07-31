@@ -523,6 +523,18 @@ def run_backtest(
                         reason["weakest_group"] = dropped[2]
                 return reason
 
+            # 분할 진입(ramp_in_months): 시작 후 k개월차(1-base) 노출을 k/N로
+            # 캡 — 잔여는 현금. 라이브 ramp-in과 동일 시맨틱의 백테스트 대응.
+            if strategy.ramp_in_months:
+                elapsed_months = (
+                    (current_day.year - strategy.start_date.year) * 12
+                    + (current_day.month - strategy.start_date.month)
+                )
+                ramp = min(1.0, (elapsed_months + 1) / strategy.ramp_in_months)
+                if ramp < 1.0:
+                    exposure = exposure * ramp
+                    _warn(warnings, f"{current_day} ramp-in cap {ramp:.0%}")
+
             if strategy.execution_lag_days > 0:
                 # Signal today, fill at a later close — removes the
                 # same-close fill assumption (look-ahead robustness).

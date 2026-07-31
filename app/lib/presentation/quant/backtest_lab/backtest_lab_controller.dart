@@ -24,6 +24,10 @@ final runModelFilterProvider = StateProvider<String?>((ref) => null);
 /// own `after_tax: bool = False` default.
 final afterTaxProvider = StateProvider<bool>((ref) => false);
 
+/// 분할 진입(ramp_in_months) 실행 옵션 — 0=올인(기존). 시작 후 k개월차
+/// 노출을 k/N로 캡해 올인 vs 분할 진입을 비교할 수 있다.
+final rampInMonthsProvider = StateProvider<int>((ref) => 0);
+
 /// Parses the human-readable execution timestamp out of a `run_id` of the
 /// form `YYYYMMDD_HHMMSS_<slug>` (the backend's backtest run-id
 /// convention). Returns `null` when the id doesn't match that shape so

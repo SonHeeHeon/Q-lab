@@ -69,6 +69,9 @@ class StrategyDefinition(BaseModel):
     start_date: date
     end_date: date
     groups: list[FactorGroup] | None = None
+    # 분할 진입: 시작 후 k개월차(1-base) 리밸런스의 투자 노출을 k/N로 캡
+    # (잔여는 현금). None/0 = 기존 올인 동작.
+    ramp_in_months: int | None = None
     min_groups: int = 5
     winsor_pct: float = 0.01
     clip_z: float = 3.0

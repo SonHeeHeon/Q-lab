@@ -72,6 +72,7 @@ class BacktestLabScreen extends ConsumerWidget {
               const _EquationBuilderBanner(),
               const _PortfolioBacktestBanner(),
               const _AfterTaxToggle(),
+              const _RampInSelector(),
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
                 child: Row(
@@ -380,6 +381,48 @@ class _AfterTaxToggle extends ConsumerWidget {
         ),
         value: enabled,
         onChanged: (v) => ref.read(afterTaxProvider.notifier).state = v,
+      ),
+    );
+  }
+}
+
+/// 분할 진입(ramp-in) 실행 옵션 — 다음 실행부터 적용되는 per-run 설정.
+/// 0=올인(기존 표준), N개월=시작 후 k개월차 노출을 k/N로 캡(잔여 현금).
+class _RampInSelector extends ConsumerWidget {
+  const _RampInSelector();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final months = ref.watch(rampInMonthsProvider);
+    return Card(
+      margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+      child: ListTile(
+        dense: true,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+        leading: Icon(
+          Icons.stairs_outlined,
+          color: months > 0 ? theme.colorScheme.primary : theme.colorScheme.outline,
+        ),
+        title: const Text('분할 진입'),
+        subtitle: const Text(
+          '시작 후 N개월에 걸쳐 단계 투입 (0=일괄, 올인 대비 비교용)',
+          style: TextStyle(fontSize: 11),
+        ),
+        trailing: DropdownButton<int>(
+          value: const [0, 3, 6, 12].contains(months) ? months : 0,
+          items: const [
+            DropdownMenuItem(value: 0, child: Text('일괄')),
+            DropdownMenuItem(value: 3, child: Text('3개월')),
+            DropdownMenuItem(value: 6, child: Text('6개월')),
+            DropdownMenuItem(value: 12, child: Text('12개월')),
+          ],
+          onChanged: (v) {
+            if (v != null) {
+              ref.read(rampInMonthsProvider.notifier).state = v;
+            }
+          },
+        ),
       ),
     );
   }
