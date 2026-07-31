@@ -176,6 +176,7 @@ class BacktestRunDetail {
     this.gitCommit,
     this.rawParams,
     this.trades = const [],
+    this.tradeNames = const {},
   });
 
   final String runId;
@@ -187,6 +188,9 @@ class BacktestRunDetail {
   /// Trade log for PERSISTED runs (`GET /api/backtest/runs/{id}`). Older
   /// runs predate this field and return an empty list — never absent.
   final List<TradeRecord> trades;
+
+  /// 코드 → 종목명 (백엔드 `names` — 미등록 코드는 없음, 코드로 폴백 표기).
+  final Map<String, String> tradeNames;
 
   factory BacktestRunDetail.fromJson(Map<String, dynamic> j) {
     final params = j['params'] is Map ? asJsonMap(j['params']) : <String, dynamic>{};
@@ -200,6 +204,10 @@ class BacktestRunDetail {
       trades: ((j['trades'] as List?) ?? const [])
           .map((e) => TradeRecord.fromJson(asJsonMap(e)))
           .toList(),
+      tradeNames: {
+        for (final e in ((j['names'] as Map?) ?? const {}).entries)
+          e.key.toString(): e.value.toString(),
+      },
     );
   }
 }
@@ -514,6 +522,7 @@ class BacktestRunResult {
     required this.trades,
     required this.warnings,
     this.afterTax = false,
+    this.tradeNames = const {},
   });
 
   final String runId;
@@ -533,6 +542,9 @@ class BacktestRunResult {
   /// after-tax if the strategy's universe doesn't support it yet (e.g. US)
   /// — that fallback is surfaced as a message in [warnings] instead.
   final bool afterTax;
+
+  /// 코드 → 종목명 (백엔드 `names`).
+  final Map<String, String> tradeNames;
 
   factory BacktestRunResult.fromJson(Map<String, dynamic> j) {
     final result = asJsonMap(j['result']);
@@ -562,6 +574,10 @@ class BacktestRunResult {
           .toList(),
       warnings: warnings,
       afterTax: (j['after_tax'] as bool?) ?? false,
+      tradeNames: {
+        for (final e in ((j['names'] as Map?) ?? const {}).entries)
+          e.key.toString(): e.value.toString(),
+      },
     );
   }
 }

@@ -75,6 +75,9 @@ class _Body extends StatelessWidget {
     // equity_curve); fall back to the persisted detail's trades[] so a run
     // opened from history — no in-memory cache — still shows its log.
     final trades = cached?.trades ?? detail.trades;
+    final tradeNames = {...detail.tradeNames, ...?cached?.tradeNames};
+    const usUniverses = {'NASDAQ100', 'US_LARGE', 'US_ALL', 'SP1500', 'ETF_US'};
+    final isUs = usUniverses.contains(detail.strategy.universe.toUpperCase());
     return LayoutBuilder(builder: (context, c) {
       // 2 cols on narrow, 4 on wide
       final cols = c.maxWidth >= 720 ? 4 : 2;
@@ -89,7 +92,7 @@ class _Body extends StatelessWidget {
           const SizedBox(height: 16),
           _StrategyCard(strategy: detail.strategy, gitCommit: detail.gitCommit),
           const SizedBox(height: 16),
-          _TradesCard(trades: trades),
+          _TradesCard(trades: trades, names: tradeNames, isUs: isUs),
           if (cached != null && cached!.warnings.isNotEmpty) ...[
             const SizedBox(height: 16),
             _WarningsCard(warnings: cached!.warnings),
@@ -331,8 +334,18 @@ String _formatNav(double v) {
 enum _TradeSideFilter { all, buy, sell }
 
 class _TradesCard extends StatefulWidget {
-  const _TradesCard({required this.trades});
+  const _TradesCard({
+    required this.trades,
+    this.names = const {},
+    this.isUs = false,
+  });
   final List<TradeRecord> trades;
+
+  /// 코드 → 종목명 (백엔드 names — 미등록 코드는 코드 그대로 표기).
+  final Map<String, String> names;
+
+  /// US 유니버스 런이면 금액을 $로 표기.
+  final bool isUs;
 
   @override
   State<_TradesCard> createState() => _TradesCardState();
@@ -434,9 +447,24 @@ class _TradesCardState extends State<_TradesCard> {
                           ),
                           const SizedBox(width: 8),
                           SizedBox(
-                            width: 72,
-                            child: Text(t.code,
-                                style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace')),
+                            width: 148,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  widget.names[t.code] ?? t.code,
+                                  style: theme.textTheme.bodySmall
+                                      ?.copyWith(fontWeight: FontWeight.w600),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                if (widget.names.containsKey(t.code))
+                                  Text(t.code,
+                                      style: theme.textTheme.labelSmall?.copyWith(
+                                        fontFamily: 'monospace',
+                                        color: theme.colorScheme.outline,
+                                      )),
+                              ],
+                            ),
                           ),
                           Expanded(
                             child: Wrap(
@@ -444,8 +472,16 @@ class _TradesCardState extends State<_TradesCard> {
                               runSpacing: 2,
                               crossAxisAlignment: WrapCrossAlignment.center,
                               children: [
-                                Text('${t.qty}주 @ ₩${NumberFormat('#,##0').format(t.price)}',
-                                    style: theme.textTheme.bodySmall),
+                                Builder(builder: (_) {
+                                  final symbol = widget.isUs ? '\$' : '₩';
+                                  final unit = NumberFormat('#,##0').format(t.price);
+                                  final total =
+                                      NumberFormat('#,##0').format(t.qty * t.price);
+                                  return Text(
+                                    '${t.qty}주 @ $symbol$unit · 총 $symbol$total',
+                                    style: theme.textTheme.bodySmall,
+                                  );
+                                }),
                                 ReasonChip(reason: t.reason, dense: true),
                               ],
                             ),

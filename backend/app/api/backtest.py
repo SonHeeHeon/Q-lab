@@ -87,15 +87,59 @@ async def run_backtest_api(
         tax_model=tax_model,
         run_options={"after_tax": applied_after_tax},
     )
+    result_payload = result.model_dump(mode="json")
     data: dict[str, Any] = {
         "run_id": run_dir.name,
         "run_dir": str(run_dir),
-        "result": result.model_dump(mode="json"),
+        "result": result_payload,
+        "names": await asyncio.to_thread(
+            _trade_names, result_payload.get("trades") or []
+        ),
         "after_tax": applied_after_tax,
     }
     if warnings:
         data["warnings"] = warnings
     return ApiEnvelope(data=data, error=None)
+
+
+def _trade_names(
+    trades: list[dict[str, Any]], *, db_path: Path | None = None
+) -> dict[str, str]:
+    """체결 목록의 코드 → 종목명 맵 (KR=stocks, US 티커=stocks_us 폴백).
+
+    미등록 코드는 생략한다 — 프런트가 코드 그대로를 폴백 표기. 동기 sqlite
+    조회이므로 호출부는 asyncio.to_thread로 감싼다.
+    """
+    import sqlite3
+
+    from shared.db.session import research_db_path
+
+    codes = sorted({str(t.get("code") or "") for t in trades} - {""})
+    if not codes:
+        return {}
+    kr_codes = [c for c in codes if c.isdigit()]
+    us_codes = [c for c in codes if not c.isdigit()]
+    names: dict[str, str] = {}
+    path = db_path or research_db_path
+    try:
+        with sqlite3.connect(path) as conn:
+            if kr_codes:
+                marks = ",".join("?" * len(kr_codes))
+                rows = conn.execute(
+                    f"SELECT code, name FROM stocks WHERE code IN ({marks})",
+                    kr_codes,
+                ).fetchall()
+                names.update({r[0]: r[1] for r in rows if r[1]})
+            if us_codes:
+                marks = ",".join("?" * len(us_codes))
+                rows = conn.execute(
+                    f"SELECT ticker, name FROM stocks_us WHERE ticker IN ({marks})",
+                    us_codes,
+                ).fetchall()
+                names.update({r[0]: r[1] for r in rows if r[1]})
+    except sqlite3.Error:
+        return names  # 이름은 표시 보강일 뿐 — 조회 실패가 응답을 막지 않는다
+    return names
 
 
 @router.get("/runs", response_model=ApiEnvelope[list[dict[str, Any]]])
@@ -142,6 +186,7 @@ async def get_backtest_run(run_id: str) -> ApiEnvelope[dict[str, Any]]:
             "metrics": metrics,
             "params": params,
             "trades": trades,
+            "names": await asyncio.to_thread(_trade_names, trades),
         },
         error=None,
     )
