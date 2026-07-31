@@ -223,54 +223,6 @@ class AccountDetail {
   }
 }
 
-/// Client-side aggregate across the 3 KIS accounts. Built by
-/// PortfolioApi.getUnifiedBalance() until the backend ships
-/// `GET /api/portfolio` natively (Blueprint §8.1).
-class UnifiedBalance {
-  UnifiedBalance({
-    required this.asOf,
-    required this.totalValue,
-    required this.totalPl,
-    required this.totalPlPct,
-    required this.accounts,
-    required this.positions,
-  });
-
-  final DateTime asOf;
-  final double totalValue;
-  final double totalPl;
-  final double totalPlPct;
-  final List<AccountSummary> accounts;
-  final List<Position> positions;
-
-  factory UnifiedBalance.fromAccounts(List<AccountDetail> details) {
-    final accounts = [
-      for (final d in details)
-        AccountSummary(
-          accountType: d.accountType,
-          totalValue: d.totalValue,
-          cashBalance: d.cashBalance,
-          totalPl: d.totalPl,
-          totalPlPct: d.totalPlPct,
-        ),
-    ];
-    final positions = [for (final d in details) ...d.positions];
-    final totalValue = details.fold<double>(0, (s, d) => s + d.totalValue);
-    final totalPl = details.fold<double>(0, (s, d) => s + d.totalPl);
-    final costBasis = positions.fold<double>(0, (s, p) => s + p.costBasis);
-    final totalPlPct = costBasis == 0 ? 0.0 : (totalPl / costBasis) * 100;
-
-    return UnifiedBalance(
-      asOf: DateTime.now(),
-      totalValue: totalValue,
-      totalPl: totalPl,
-      totalPlPct: totalPlPct,
-      accounts: accounts,
-      positions: positions,
-    );
-  }
-}
-
 enum OrderDirection { buy, sell }
 
 class PlaceOrderRequest {
@@ -409,19 +361,12 @@ class PortfolioApi {
     return AccountDetail.fromJson(asJsonMap(res.data));
   }
 
-  /// Aggregates the 3 KIS accounts client-side. Skips any account whose
-  /// fetch throws (e.g. credentials missing for REAL/ISA in dev).
-  Future<UnifiedBalance> getUnifiedBalance() async {
-    final results = await Future.wait(
-      KisAccount.values.map(
-        (t) => getAccountDetail(t).then<AccountDetail?>((v) => v).catchError((_) => null),
-      ),
-    );
-    final ok = results.whereType<AccountDetail>().toList();
-    return UnifiedBalance.fromAccounts(ok);
-  }
-
-  Future<UnifiedPortfolio> getUnifiedPortfolio(BrokerFilter filter) async {
+  /// [excludePaper]=true 는 모의(PAPER) 계좌를 서버 집계에서 제외한다 —
+  /// 홈 '오늘의 평가손익'처럼 실자산만 보여야 하는 화면용.
+  Future<UnifiedPortfolio> getUnifiedPortfolio(
+    BrokerFilter filter, {
+    bool excludePaper = false,
+  }) async {
     final dio = _ref.read(dioProvider);
     final brokerParam = switch (filter) {
       BrokerFilter.all => 'ALL',
@@ -430,7 +375,10 @@ class PortfolioApi {
     };
     final res = await dio.get<dynamic>(
       '/api/portfolio',
-      queryParameters: {'broker': brokerParam},
+      queryParameters: {
+        'broker': brokerParam,
+        if (excludePaper) 'exclude_paper': 'true',
+      },
     );
     return UnifiedPortfolio.fromJson(asJsonMap(res.data));
   }

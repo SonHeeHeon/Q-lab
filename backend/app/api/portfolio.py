@@ -60,10 +60,21 @@ def get_kis_rest_client() -> KISRestClient:
     return KISRestClient()
 
 
+def _unified_account_types(*, exclude_paper: bool) -> list[AccountType]:
+    """통합 조회 대상 KIS 계좌 — exclude_paper면 모의(PAPER) 제외.
+
+    홈 '오늘의 평가손익'처럼 실자산만 집계해야 하는 화면용 opt-in.
+    """
+    if not exclude_paper:
+        return list(AccountType)
+    return [t for t in AccountType if t is not AccountType.PAPER]
+
+
 @router.get("", response_model=UnifiedPortfolioEnvelope)
 async def get_unified_portfolio(
     kis_client: KISRestClient = Depends(get_kis_rest_client),
     broker: str = Query(default="ALL", pattern="^(ALL|KIS|TOSS)$"),
+    exclude_paper: bool = Query(default=False),
     session: AsyncSession = Depends(get_service_session),
 ) -> UnifiedPortfolioEnvelope:
     portfolios: list[PortfolioResponse] = []
@@ -71,11 +82,12 @@ async def get_unified_portfolio(
     selected_broker = str(broker).upper()
 
     if selected_broker in {"ALL", BrokerType.KIS.value}:
+        account_types = _unified_account_types(exclude_paper=exclude_paper)
         results = await asyncio.gather(
-            *(kis_client.get_balance(account_type) for account_type in AccountType),
+            *(kis_client.get_balance(account_type) for account_type in account_types),
             return_exceptions=True,
         )
-        for account_type, result in zip(AccountType, results, strict=True):
+        for account_type, result in zip(account_types, results, strict=True):
             if isinstance(result, Exception):
                 errors.append(
                     {

@@ -147,7 +147,7 @@ class _SectionCard extends StatelessWidget {
 
 class _PnlCard extends StatelessWidget {
   const _PnlCard({required this.balance});
-  final UnifiedBalance balance;
+  final UnifiedPortfolio balance;
 
   @override
   Widget build(BuildContext context) {
@@ -204,7 +204,7 @@ class _PnlCard extends StatelessWidget {
 
 class _AccountPill extends StatelessWidget {
   const _AccountPill({required this.account});
-  final AccountSummary account;
+  final UnifiedAccountSummary account;
 
   @override
   Widget build(BuildContext context) {
@@ -220,7 +220,12 @@ class _AccountPill extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(account.accountType.wire, style: theme.textTheme.labelSmall),
+          Text(
+            account.broker == BrokerType.TOSS
+                ? '토스(US)'
+                : (account.accountType?.label ?? account.accountType?.wire ?? '?'),
+            style: theme.textTheme.labelSmall,
+          ),
           const SizedBox(height: 2),
           Text(_krw.format(account.totalValue),
               style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600)),
@@ -310,7 +315,7 @@ class _TriggeredTodayCard extends StatelessWidget {
 
 class _TopMoversCard extends StatelessWidget {
   const _TopMoversCard({required this.positions});
-  final List<Position> positions;
+  final List<UnifiedPosition> positions;
 
   @override
   Widget build(BuildContext context) {
@@ -333,12 +338,12 @@ class _TopMoversCard extends StatelessWidget {
 class _MoverRow extends StatelessWidget {
   const _MoverRow({required this.rank, required this.position});
   final int rank;
-  final Position position;
+  final UnifiedPosition position;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final isUp = position.unrealizedPlPct >= 0;
+    final isUp = (position.unrealizedPlPct ?? 0) >= 0;
     final color = isUp ? Colors.redAccent : Colors.blueAccent;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
@@ -357,7 +362,7 @@ class _MoverRow extends StatelessWidget {
             ),
           ),
           Text(
-            '${_pct.format(position.unrealizedPlPct)}%',
+            '${_pct.format(position.unrealizedPlPct ?? 0)}%',
             style: theme.textTheme.titleMedium?.copyWith(color: color, fontWeight: FontWeight.w700),
           ),
         ],

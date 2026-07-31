@@ -24,10 +24,10 @@ class HomeSnapshot {
     this.alertsError,
   });
 
-  final UnifiedBalance balance;
+  final UnifiedPortfolio balance;
   final List<Alert> pendingAlerts;
   final List<Alert> triggeredToday;
-  final List<Position> topMovers;
+  final List<UnifiedPosition> topMovers;
 
   /// `false` only when the alerts endpoint is genuinely missing (404).
   /// Other failures (5xx, timeout) surface via [alertsError] and the
@@ -40,7 +40,11 @@ final homeSnapshotProvider = FutureProvider<HomeSnapshot>((ref) async {
   final portfolioApi = ref.read(portfolioApiProvider);
   final alertsApi = ref.read(alertsApiProvider);
 
-  final balance = await portfolioApi.getUnifiedBalance();
+  // 홈 손익 = 실계좌 전체(Toss 포함) 합산, 모의(PAPER) 제외 — 서버 통합 1콜.
+  final balance = await portfolioApi.getUnifiedPortfolio(
+    BrokerFilter.all,
+    excludePaper: true,
+  );
 
   List<Alert> alerts = const [];
   bool alertsAvailable = true;
@@ -73,7 +77,8 @@ final homeSnapshotProvider = FutureProvider<HomeSnapshot>((ref) async {
   }).toList();
 
   final movers = [...balance.positions]
-    ..sort((a, b) => b.unrealizedPlPct.abs().compareTo(a.unrealizedPlPct.abs()));
+    ..sort((a, b) =>
+        (b.unrealizedPlPct ?? 0).abs().compareTo((a.unrealizedPlPct ?? 0).abs()));
   final topMovers = movers.take(3).toList();
 
   return HomeSnapshot(
