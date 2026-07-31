@@ -14,7 +14,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.api.portfolio import (
@@ -29,7 +29,7 @@ from backend.app.services.orders.guard import (
     assert_daily_loss_ok,
     guard_order,
 )
-from shared.db.models import OrderProposal
+from shared.db.models import OrderProposal, Setting
 from shared.domain.account import AccountType, BrokerType
 from shared.domain.trade import TradeDirection
 
@@ -99,6 +99,17 @@ async def mark_proposal(
     )
     await session.commit()
     await session.refresh(proposal)
+
+
+async def _settings_rows(session: AsyncSession) -> dict[str, str]:
+    """Setting 테이블 전체를 dict로 — Toss 클라이언트 구성(toss_is_mock 등)용.
+
+    수동 주문 경로(api/portfolio)와 동일하게 DB 설정이 env 기본값을 이겨야
+    한다 — 앱에서 실주문 전환(toss_is_mock=false)이 승인 경로에도 반영되도록
+    (2026-08-01 리뷰 P0-2).
+    """
+    rows = (await session.execute(select(Setting))).scalars().all()
+    return {row.key: row.value for row in rows}
 
 
 async def reject_proposal_cas(
@@ -192,8 +203,10 @@ async def approve_and_execute(
     try:
         if request.broker is BrokerType.TOSS:
             # Toss 실행 — toss_is_mock=true면 클라이언트가 모의 응답을 돌려준다
-            # (실체결 없음). 실주문 전환은 라이브 잠금 해제 + 소액 스모크 후.
-            order = await broker_client(BrokerType.TOSS).place_order(request)
+            # (실체결 없음). DB Setting이 env를 이긴다(수동 주문 경로와 동일).
+            order = await broker_client(
+                BrokerType.TOSS, settings_rows=await _settings_rows(session)
+            ).place_order(request)
         else:
             order = await kis_client.place_order(request)
     except KISRestError as exc:

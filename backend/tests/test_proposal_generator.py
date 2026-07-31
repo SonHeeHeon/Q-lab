@@ -190,8 +190,18 @@ async def test_insert_skips_duplicate_pending(service_sessionmaker, monkeypatch)
     assert (first[0], second[0]) == (1, 0)
     assert first[1] is not None and second[1] is None
 
+    # 교차 계좌: 같은 전략·종목이라도 다른 계좌(DC)는 삼키면 안 된다 (P0-1)
+    third = await pg._insert_proposals(
+        drafts, strategy=strategy, account=pg.AccountType.DC, as_of=date(2026, 7, 13)
+    )
+    assert third[0] == 1
+
     async with service_sessionmaker() as session:
-        row = (await session.execute(pg.select(OrderProposal))).scalars().one()
+        row = (
+            await session.execute(
+                pg.select(OrderProposal).where(OrderProposal.account_type == "PAPER")
+            )
+        ).scalars().one()
         assert row.status == "PROPOSED"
         assert json.loads(row.reason_json)["rule"] == "BAND_TRIM"
         assert row.expires_at is not None and row.expires_at.hour == 8

@@ -37,6 +37,7 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 
 from backend.app.core.config import settings
 from backend.app.services.batch.daily_analysis import (
@@ -766,6 +767,22 @@ async def run_sleeve_proposals(
     """
     account = account_type or settings.PROPOSAL_ACCOUNT_TYPE
     as_of = latest_research_price_date()
+
+    # 계좌 프로파일이 이 계좌를 관리 중이면(quant_enabled) 레거시 잡은 양보 —
+    # 동일 크론에서 두 시스템이 같은 계좌에 이중 제안하는 것을 방지
+    # (2026-08-01 리뷰 P0-3).
+    from shared.db.models import AccountProfile
+
+    async with service_session() as session:
+        profile = await session.get(AccountProfile, f"KIS:{account.value}")
+    if profile is not None and profile.quant_enabled:
+        summary = {
+            "as_of": as_of.isoformat(),
+            "skipped": f"account KIS:{account.value} is managed by account profile",
+        }
+        logger.info("sleeve proposal generation %s", summary)
+        return summary
+
     stock_name, etf_name, weight = await _read_sleeve_settings()
 
     client = KISRestClient()
@@ -990,34 +1007,55 @@ async def _insert_proposals(
                 OrderProposal.status == "PROPOSED"
             ).where(
                 OrderProposal.strategy_name == name
+            ).where(
+                # 계좌·마켓 스코프 — 같은 전략을 쓰는 다른 계좌(DC/IRP 등)의
+                # 제안을 삼키면 안 된다 (2026-08-01 리뷰 P0-1).
+                OrderProposal.account_type == account.value
+            ).where(
+                OrderProposal.market == market
             )
         )
         already = {(row[0], row[1]) for row in pending.all()}
-        for draft in drafts:
-            if (draft.stock_code, draft.side) in already:
-                continue  # 같은 방향 제안이 이미 대기 중 — 중복 금지
-            session.add(
-                OrderProposal(
-                    batch_id=batch_id,
-                    proposal_date=as_of,
-                    account_type=account.value,
-                    strategy_name=name,
-                    config_hash=config_hash,
-                    stock_code=draft.stock_code,
-                    market=market,
-                    side=draft.side,
-                    qty=draft.qty,
-                    order_type="LIMIT",
-                    limit_price=Decimal(str(draft.limit_price)),
-                    last_price=Decimal(str(draft.last_price)),
-                    estimated_notional=Decimal(str(draft.estimated_notional)),
-                    reason_json=json.dumps(draft.reason, ensure_ascii=False),
-                    status="PROPOSED",
-                    expires_at=expires_at,
-                )
+        fresh = [d for d in drafts if (d.stock_code, d.side) not in already]
+
+        def _row(draft: ProposalDraft) -> OrderProposal:
+            return OrderProposal(
+                batch_id=batch_id,
+                proposal_date=as_of,
+                account_type=account.value,
+                strategy_name=name,
+                config_hash=config_hash,
+                stock_code=draft.stock_code,
+                market=market,
+                side=draft.side,
+                qty=draft.qty,
+                order_type="LIMIT",
+                limit_price=Decimal(str(draft.limit_price)),
+                last_price=Decimal(str(draft.last_price)),
+                estimated_notional=Decimal(str(draft.estimated_notional)),
+                reason_json=json.dumps(draft.reason, ensure_ascii=False),
+                status="PROPOSED",
+                expires_at=expires_at,
             )
-            inserted += 1
-        await session.commit()
+
+        for draft in fresh:
+            session.add(_row(draft))
+        try:
+            await session.commit()
+            inserted = len(fresh)
+        except IntegrityError:
+            # 부분 유니크 인덱스(PROPOSED) 경합 — 행 단위로 재시도해 충돌만 스킵.
+            await session.rollback()
+            logger.warning("proposal insert race — retrying row-by-row")
+            inserted = 0
+            for draft in fresh:
+                async with service_session() as retry_session:
+                    retry_session.add(_row(draft))
+                    try:
+                        await retry_session.commit()
+                        inserted += 1
+                    except IntegrityError:
+                        await retry_session.rollback()
     return inserted, (batch_id if inserted else None)
 
 
