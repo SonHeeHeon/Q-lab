@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from backend.app.api.accounts import router as accounts_router
 from backend.app.api.alerts import router as alerts_router
 from backend.app.api.backtest import router as backtest_router
 from backend.app.api.fx import router as fx_router
@@ -255,6 +256,7 @@ async def unhandled_exception_handler(_request: Request, exc: Exception) -> JSON
     return JSONResponse(status_code=500, content=envelope.model_dump(mode="json"))
 
 
+app.include_router(accounts_router)
 app.include_router(backtest_router)
 app.include_router(fx_router)
 app.include_router(heatmap_router)
