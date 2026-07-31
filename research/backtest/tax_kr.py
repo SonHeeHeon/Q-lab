@@ -258,6 +258,41 @@ class USCapitalGainsTaxModel(TaxModel):
         return delta
 
 
+# ISA(중개형) 세제: 과세 대상 손익(과세 ETF 매매차익 등)을 계좌 내 통산해
+# 만기(해지) 시 비과세 한도(일반형 200만/서민형 400만) 초과분에 9.9% 분리과세.
+ISA_GAINS_TAX_RATE = 0.099
+ISA_EXEMPTION_KRW = 2_000_000
+
+
+class ISATaxModel(TaxModel):
+    """ISA 세금모델 — 만기 일괄 정산의 per-sell 델타 근사.
+
+    US 연간통산 모델과 같은 델타 방식이지만 **연도 리셋이 없다**(만기까지
+    누적 통산). 과세 대상은 ``classify_kr_instrument``가 ``etf_taxable``인
+    코드의 실현손익만 — KR 주식·국내주식형 ETF 매매차익은 ISA 밖에서도
+    비과세라 통산에 넣지 않는다. 개별 trade의 gains_tax가 음수(환급)일 수
+    있고 합계는 만기 정산액과 일치한다. 배당·이자소득 통산은 범위 밖
+    (백테스트가 가격수익 기준이라 데이터가 없음 — 문서화된 한계).
+    """
+
+    isa_rate: float = ISA_GAINS_TAX_RATE
+    exemption_krw: float = ISA_EXEMPTION_KRW  # 서민형은 4_000_000 지정
+
+    _net_gain: float = PrivateAttr(default=0.0)
+    _charged: float = PrivateAttr(default=0.0)
+
+    def gains_tax_for(
+        self, code: str, realized_gain: float, trade_date: Date | None = None
+    ) -> float:
+        if classify_kr_instrument(code) != "etf_taxable":
+            return 0.0
+        self._net_gain += realized_gain
+        owed = self.isa_rate * max(0.0, self._net_gain - self.exemption_krw)
+        delta = owed - self._charged
+        self._charged = owed
+        return delta
+
+
 _US_TAX_UNIVERSES = {"NASDAQ100", "US_LARGE", "US_ALL", "SP1500", "ETF_US"}
 
 # DC 퇴직연금 유니버스: 계좌 내 매매차익 과세이연 → 세후 모드에서도 세금 없음.
