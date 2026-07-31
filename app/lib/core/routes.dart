@@ -37,6 +37,7 @@ import '../presentation/shell/app_shell.dart';
 import '../presentation/stocks/stock_detail_screen.dart';
 import '../presentation/stocks/stock_search_screen.dart';
 import '../presentation/trade_journal/trade_journal_screen.dart';
+import '../presentation/accounts/accounts_screen.dart';
 import '../presentation/watchlist/watchlist_screen.dart';
 
 class NavDestination {
@@ -49,6 +50,7 @@ class NavDestination {
 const navDestinations = <NavDestination>[
   NavDestination(path: '/', label: '홈', icon: Icons.home_outlined),
   NavDestination(path: '/portfolio', label: '포트폴리오', icon: Icons.account_balance_wallet_outlined),
+  NavDestination(path: '/accounts', label: '계좌', icon: Icons.switch_account_outlined),
   NavDestination(path: '/stocks', label: '종목', icon: Icons.search_outlined),
   NavDestination(path: '/watchlist', label: '관심종목', icon: Icons.star_border),
   NavDestination(path: '/trade-journal', label: '매매일지', icon: Icons.menu_book_outlined),
@@ -70,6 +72,7 @@ final routerProvider = Provider<GoRouter>((ref) {
         routes: [
           GoRoute(path: '/', builder: (_, __) => const HomeScreen()),
           GoRoute(path: '/portfolio', builder: (_, __) => const PortfolioScreen()),
+          GoRoute(path: '/accounts', builder: (_, __) => const AccountsScreen()),
           GoRoute(
             path: '/stocks',
             builder: (_, __) => const StockSearchScreen(),
