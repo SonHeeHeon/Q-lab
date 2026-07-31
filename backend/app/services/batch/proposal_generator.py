@@ -246,6 +246,62 @@ def full_rebalance_proposals(
     return sorted(drafts, key=lambda d: 0 if d.side == "SELL" else 1)
 
 
+def _sleeve_scope_codes(
+    universe: str,
+    positions: dict[str, int],
+    etf_set: set[str],
+    *,
+    as_of: Date,
+) -> set[str]:
+    """보유 종목을 전략 유니버스 소속으로 스코핑 (일반/이월 경로 공용).
+
+    DC 유니버스=allowlist ∩, ETF_KR=ETF ∩, 그 외 KR=ETF 제외 — ETF 전략이
+    주식을 팔거나 그 반대 사고를 구조적으로 막는 기존 안전장치 그대로.
+    """
+    if universe.upper().startswith("ETF_KR_DC"):
+        dc_set = set(get_universe(universe, as_of=as_of, db_path=research_db_path))
+        return set(positions) & dc_set
+    if universe == "ETF_KR":
+        return set(positions) & etf_set
+    return set(positions) - etf_set
+
+
+# 위험관리 규칙 — 사용자가 거절해도 조건이 유지되면 계속 제안한다(안전 우선).
+RISK_RULES = frozenset({"STOP_LOSS", "TAKE_PROFIT", "REGIME_DERISK"})
+
+
+def _filter_rejected(
+    drafts: list[ProposalDraft], rejected: set[tuple[str, str]]
+) -> list[ProposalDraft]:
+    """이번 주기에 명시적으로 거절된 (종목, 방향)은 재제안하지 않는다 (순수).
+
+    예외: 위험관리 규칙(RISK_RULES)은 거절 이력이 있어도 통과 — 손절 조건이
+    유지되는 포지션을 조용히 방치하지 않는다.
+    """
+    if not rejected:
+        return drafts
+    return [
+        d for d in drafts
+        if d.reason.get("rule") in RISK_RULES
+        or (d.stock_code, d.side) not in rejected
+    ]
+
+
+async def _rejected_keys(
+    account: AccountType, as_of: Date
+) -> set[tuple[str, str]]:
+    """이번 주기(YYYY-MM) 내 REJECTED 제안의 (종목, 방향) 집합."""
+    month_start = as_of.replace(day=1)
+    async with service_session() as session:
+        rows = await session.execute(
+            select(OrderProposal.stock_code, OrderProposal.side)
+            .where(OrderProposal.status == "REJECTED")
+            .where(OrderProposal.account_type == account.value)
+            .where(OrderProposal.proposal_date >= month_start)
+        )
+    return {(row[0], row[1]) for row in rows.all()}
+
+
 def build_carryover_drafts(
     target: dict[str, int],
     positions: dict[str, int],
@@ -391,16 +447,9 @@ async def run_proposal_generation(
 
     # --- 슬리브 스코핑: 보유 종목을 전략 유니버스 기준으로 분리 ---
     etf_set = set(get_universe("ETF_KR", as_of=as_of, db_path=research_db_path))
-    if strategy.universe.upper().startswith("ETF_KR_DC"):
-        # DC 유니버스: allowlist 소속 ETF만 이 슬리브가 관리 (그 외 보유 불간섭)
-        dc_set = set(
-            get_universe(strategy.universe, as_of=as_of, db_path=research_db_path)
-        )
-        sleeve_codes = set(positions) & dc_set
-    elif strategy.universe == "ETF_KR":
-        sleeve_codes = set(positions) & etf_set
-    else:
-        sleeve_codes = set(positions) - etf_set
+    sleeve_codes = _sleeve_scope_codes(
+        strategy.universe, positions, etf_set, as_of=as_of
+    )
     sleeve_positions = {code: positions[code] for code in sleeve_codes}
     sleeve_entry_prices = {code: entry_prices[code] for code in sleeve_codes}
     sleeve_holdings_value = sum(
@@ -521,6 +570,8 @@ async def run_proposal_generation(
             confirmed_regime_exposure=confirmed_exposure,
         )
     drafts = [d for d in drafts if d.qty > 0 and d.last_price > 0]
+    # 거절 존중: 이번 주기 내 명시적 거절 (종목, 방향)은 재제안 억제(위험규칙 예외).
+    drafts = _filter_rejected(drafts, await _rejected_keys(account, as_of))
     for draft in drafts:
         if draft.side != "SELL":
             continue
@@ -562,6 +613,79 @@ async def run_proposal_generation(
     if unclassified_skipped:
         summary["unclassified_skipped"] = unclassified_skipped
     logger.info("proposal generation %s", summary)
+    if send_telegram and inserted:
+        await _notify(drafts, summary)
+    return summary
+
+
+async def run_carryover_generation(
+    *,
+    strategy_name: str,
+    account_type: AccountType,
+    nav_weight: float,
+    send_telegram: bool = True,
+) -> dict:
+    """비월초 이월 재제안 — 이번 주기 저장 목표 vs 실보유의 잔여 diff.
+
+    잔여 노셔널이 슬리브 NAV의 1% 미만이면 이행 완료로 보고 스킵한다.
+    거절 존중 필터 동일 적용.
+    """
+    strategy = load_strategy(strategy_name)
+    account = account_type
+    as_of = latest_research_price_date()
+
+    target = await load_rebalance_target(account, strategy.name, as_of)
+    if not target:
+        return {"skipped": "no saved target this period"}
+
+    client = KISRestClient()
+    balance = await client.get_balance(account)
+    positions: dict[str, int] = {}
+    prices: dict[str, float] = {}
+    holdings_value = 0.0
+    for pos in balance.positions:
+        code = pos.stock_code.zfill(6)
+        qty = int(pos.quantity)
+        if qty <= 0:
+            continue
+        positions[code] = qty
+        price = float(pos.current_price or pos.avg_buy_price or 0)
+        prices[code] = price
+        holdings_value += qty * price
+    nav = float(balance.summary.total_evaluation_amount or 0) or (
+        holdings_value or 1.0
+    )
+    sleeve_nav = nav * nav_weight
+
+    etf_set = set(get_universe("ETF_KR", as_of=as_of, db_path=research_db_path))
+    sleeve_codes = _sleeve_scope_codes(
+        strategy.universe, positions, etf_set, as_of=as_of
+    )
+    scoped = {code: positions[code] for code in sleeve_codes}
+    # 목표 종목의 가격 공백은 연구 종가로 보강 (보유에 없는 매수 대상)
+    missing = sorted(set(target) - set(prices))
+    prices = {**prices, **_research_closes(missing, as_of)}
+
+    residual = carryover_residual_notional(target, scoped, prices)
+    if residual < sleeve_nav * 0.01:
+        return {"skipped": f"carryover residual below 1% ({residual:.0f})"}
+
+    drafts = build_carryover_drafts(target, scoped, prices)
+    drafts = [d for d in drafts if d.qty > 0 and d.last_price > 0]
+    drafts = _filter_rejected(drafts, await _rejected_keys(account, as_of))
+    inserted = await _insert_proposals(
+        drafts, strategy=strategy, account=account, as_of=as_of,
+    )
+    summary = {
+        "proposal_date": as_of.isoformat(),
+        "account": account.value,
+        "strategy": strategy.name,
+        "mode": "CARRYOVER",
+        "drafted": len(drafts),
+        "inserted": inserted,
+        "residual": round(residual),
+    }
+    logger.info("carryover generation %s", summary)
     if send_telegram and inserted:
         await _notify(drafts, summary)
     return summary
@@ -613,7 +737,18 @@ async def run_sleeve_proposals(
             warnings=warnings,
         )
     else:
-        sleeves["etf"] = {"skipped": "skipped (not month start)"}
+        # 월초가 아니어도 이번 달 목표의 미이행분이 남아 있으면 이월 재제안.
+        try:
+            sleeves["etf"] = await run_carryover_generation(
+                strategy_name=etf_name,
+                account_type=account,
+                nav_weight=weight,
+                send_telegram=send_telegram,
+            )
+        except Exception as exc:  # noqa: BLE001 — 이월 실패가 주식 슬리브를 막지 않게
+            logger.exception("etf sleeve carryover failed")
+            warnings.append(f"etf carryover failed: {exc}")
+            sleeves["etf"] = {"error": "carryover failed (see logs)"}
 
     account_nav, account_holdings_value = _account_nav_and_holdings(balance)
     est_cash = account_nav - account_holdings_value

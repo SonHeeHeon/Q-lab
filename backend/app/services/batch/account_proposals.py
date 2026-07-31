@@ -22,6 +22,7 @@ from backend.app.services.batch.proposal_generator import (
     ProposalDraft,
     _insert_proposals,
     _is_month_start,
+    run_carryover_generation,
     run_proposal_generation,
 )
 from backend.app.services.kis.rest_client import KISRestClient
@@ -171,7 +172,13 @@ async def run_all_account_proposals(*, send_telegram: bool = True) -> dict:
                         load_strategy(sleeve["name"]).rebalance_freq == "MONTHLY"
                     )
                     if monthly_rotation and not _is_month_start(as_of):
-                        acct_result[label] = {"skipped": "not month start"}
+                        # 미이행 이월: 이번 달 목표가 남아 있으면 재제안
+                        acct_result[label] = await run_carryover_generation(
+                            strategy_name=sleeve["name"],
+                            account_type=account,
+                            nav_weight=float(sleeve["weight"]),
+                            send_telegram=send_telegram,
+                        )
                         continue
                     acct_result[label] = await run_proposal_generation(
                         strategy_name=sleeve["name"],

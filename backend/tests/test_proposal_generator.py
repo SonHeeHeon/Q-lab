@@ -683,9 +683,9 @@ async def test_orchestrator_single_balance_fetch_and_sleeve_isolation(
 async def test_orchestrator_etf_sleeve_skipped_when_not_month_start(
     monkeypatch, service_sessionmaker
 ):
-    """오케스트레이터 스킵 분기: 월초가 아니면 ETF 슬리브는 실행 자체를 건너뛰고
-    'skipped (not month start)'를 기록한다 (주식 슬리브는 정상 실행).
-    verifier 커버리지 갭 지적으로 추가 — 라이브 HTTP로만 확인되던 else 분기."""
+    """오케스트레이터 비월초 분기: ETF 슬리브는 이월(carryover) 경로로 가고,
+    이번 주기 저장 목표가 없으면 'no saved target this period'로 스킵한다
+    (주식 슬리브는 정상 실행). 2026-07-31 이월 기능으로 시맨틱 갱신."""
     monkeypatch.setattr(pg, "service_session", service_sessionmaker)
     as_of = date(2026, 7, 13)
     monkeypatch.setattr(pg, "latest_research_price_date", lambda: as_of)
@@ -708,7 +708,7 @@ async def test_orchestrator_etf_sleeve_skipped_when_not_month_start(
 
     summary = await pg.run_sleeve_proposals(send_telegram=False)
 
-    assert summary["sleeves"]["etf"] == {"skipped": "skipped (not month start)"}
+    assert summary["sleeves"]["etf"] == {"skipped": "no saved target this period"}
     assert summary["sleeves"]["stock"].get("drafted", 0) >= 1
     assert _CountingFakeKISClient.calls == 1
 

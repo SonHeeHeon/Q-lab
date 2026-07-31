@@ -30,6 +30,33 @@ def test_build_carryover_drafts_skips_missing_price_and_zero_diff():
     assert build_carryover_drafts(target, positions, prices) == []
 
 
+def test_filter_rejected_skips_normal_rules():
+    from backend.app.services.batch.proposal_generator import (
+        ProposalDraft,
+        _filter_rejected,
+    )
+
+    drafts = [
+        ProposalDraft("069500", "BUY", 5, 10_000.0, {"rule": "REBALANCE"}),
+        ProposalDraft("133690", "SELL", 2, 20_000.0, {"rule": "REBALANCE_CARRYOVER"}),
+        ProposalDraft("005930", "SELL", 1, 70_000.0, {"rule": "STOP_LOSS"}),
+    ]
+    rejected = {("069500", "BUY"), ("133690", "SELL"), ("005930", "SELL")}
+    out = _filter_rejected(drafts, rejected)
+    # 일반 규칙은 거절 존중으로 스킵, 위험규칙(STOP_LOSS)은 거절돼도 통과
+    assert [(d.stock_code, d.side) for d in out] == [("005930", "SELL")]
+
+
+def test_filter_rejected_no_rejection_passthrough():
+    from backend.app.services.batch.proposal_generator import (
+        ProposalDraft,
+        _filter_rejected,
+    )
+
+    drafts = [ProposalDraft("069500", "BUY", 5, 10_000.0, {"rule": "REBALANCE"})]
+    assert _filter_rejected(drafts, set()) == drafts
+
+
 def test_carryover_residual_notional():
     target = {"069500": 10}
     positions = {"069500": 4}
