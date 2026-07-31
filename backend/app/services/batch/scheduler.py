@@ -16,6 +16,7 @@ from backend.app.services.batch.daily_analysis import (
 )
 from backend.app.services.batch.daily_report import run_daily_report
 from backend.app.services.batch.data_sync import run_data_sync
+from backend.app.services.batch.account_proposals import run_all_account_proposals
 from backend.app.services.batch.proposal_generator import (
     run_proposal_expiry,
     run_sleeve_proposals,
@@ -93,6 +94,16 @@ def create_batch_scheduler() -> AsyncIOScheduler:
         run_sleeve_proposals,
         CronTrigger.from_crontab(settings.PROPOSAL_CRON, timezone=timezone),
         id="proposal_generation",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    # N계좌 오케스트레이터 — quant_enabled 계좌가 없으면 skip 로그만 남긴다
+    # (전 계좌 기본 OFF + 라이브 잠금이라 활성화 전까지 무동작).
+    scheduler.add_job(
+        run_all_account_proposals,
+        CronTrigger.from_crontab(settings.PROPOSAL_CRON, timezone=timezone),
+        id="account_proposal_generation",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

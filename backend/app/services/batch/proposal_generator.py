@@ -294,9 +294,15 @@ async def run_proposal_generation(
         holdings_value or 1.0
     )
 
-    # --- 슬리브 스코핑: 보유 종목을 ETF/주식 슬리브로 분리 ---
+    # --- 슬리브 스코핑: 보유 종목을 전략 유니버스 기준으로 분리 ---
     etf_set = set(get_universe("ETF_KR", as_of=as_of, db_path=research_db_path))
-    if strategy.universe == "ETF_KR":
+    if strategy.universe.upper().startswith("ETF_KR_DC"):
+        # DC 유니버스: allowlist 소속 ETF만 이 슬리브가 관리 (그 외 보유 불간섭)
+        dc_set = set(
+            get_universe(strategy.universe, as_of=as_of, db_path=research_db_path)
+        )
+        sleeve_codes = set(positions) & dc_set
+    elif strategy.universe == "ETF_KR":
         sleeve_codes = set(positions) & etf_set
     else:
         sleeve_codes = set(positions) - etf_set
@@ -659,16 +665,25 @@ def _confirmed_live_exposure(as_of: Date, persistence: int = 5) -> float | None:
 async def _insert_proposals(
     drafts: list[ProposalDraft],
     *,
-    strategy: StrategyDefinition,
+    strategy: StrategyDefinition | None = None,
     account: AccountType,
     as_of: Date,
+    strategy_name: str | None = None,
+    market: str = "KR",
 ) -> int:
+    """제안 저장 — strategy 없이 표시용 이름만으로도 저장 가능(hold 슬리브),
+    market 파라미터로 US 제안(Toss) 지원. 기존 콜사이트는 무변경."""
     if not drafts:
         return 0
+    name = strategy_name or (strategy.name if strategy else None)
+    if not name:
+        raise ValueError("strategy or strategy_name is required")
     batch_id = uuid.uuid4().hex
-    config_hash = hashlib.sha1(
-        strategy.model_dump_json().encode("utf-8")
-    ).hexdigest()[:10]
+    config_hash = (
+        hashlib.sha1(strategy.model_dump_json().encode("utf-8")).hexdigest()[:10]
+        if strategy is not None
+        else None
+    )
     expires_at = _next_business_morning(as_of)
     inserted = 0
     async with service_session() as session:
@@ -676,7 +691,7 @@ async def _insert_proposals(
             select(OrderProposal.stock_code, OrderProposal.side).where(
                 OrderProposal.status == "PROPOSED"
             ).where(
-                OrderProposal.strategy_name == strategy.name
+                OrderProposal.strategy_name == name
             )
         )
         already = {(row[0], row[1]) for row in pending.all()}
@@ -688,10 +703,10 @@ async def _insert_proposals(
                     batch_id=batch_id,
                     proposal_date=as_of,
                     account_type=account.value,
-                    strategy_name=strategy.name,
+                    strategy_name=name,
                     config_hash=config_hash,
                     stock_code=draft.stock_code,
-                    market="KR",
+                    market=market,
                     side=draft.side,
                     qty=draft.qty,
                     order_type="LIMIT",
