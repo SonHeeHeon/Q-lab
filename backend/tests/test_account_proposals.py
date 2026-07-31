@@ -36,6 +36,8 @@ def test_hold_sleeve_within_band_no_trade():
 
 
 def test_hold_sleeve_no_price_no_trade():
+    """순수 함수 계약: 가격이 정말 없으면 무거래. 최초 매수의 가격 공백은
+    호출부(_run_hold_sleeve)가 연구 종가 폴백으로 채운다 (리뷰 P1-4)."""
     assert hold_sleeve_proposals(
         code="153130", weight=0.32, nav=10_000_000, positions={}, prices={},
     ) == []

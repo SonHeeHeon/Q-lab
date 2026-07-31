@@ -8,6 +8,7 @@ api/proposals.py의 승인 엔드포인트 본체를 그대로 옮긴 것: 원�
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -32,6 +33,8 @@ from backend.app.services.orders.guard import (
 from shared.db.models import OrderProposal, Setting
 from shared.domain.account import AccountType, BrokerType
 from shared.domain.trade import TradeDirection
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -190,12 +193,19 @@ async def approve_and_execute(
 
     try:
         guard_order(request, reference_price=proposal.last_price)
-        await assert_daily_loss_ok(
-            session,
-            broker=request.broker,
-            account_type=request.account_type,
-            direction=request.direction,
-        )
+        if request.broker is BrokerType.TOSS:
+            # Toss는 NAV 스냅샷 기반 일일손실 가드 미지원 — 조용히 PAPER 기준
+            # 으로 오판하는 대신 명시적으로 생략+경고 (2026-08-01 리뷰 P1-6).
+            logger.warning(
+                "daily-loss guard skipped for TOSS order (no NAV snapshot)"
+            )
+        else:
+            await assert_daily_loss_ok(
+                session,
+                broker=request.broker,
+                account_type=request.account_type,
+                direction=request.direction,
+            )
     except OrderBlocked as exc:
         await mark_proposal(session, proposal, "FAILED", note=str(exc))
         return ApproveOutcome(status="blocked", proposal=proposal, note=str(exc))

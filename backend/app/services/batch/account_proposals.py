@@ -24,6 +24,7 @@ from backend.app.services.batch.proposal_generator import (
     ProposalDraft,
     _insert_proposals,
     _is_month_start,
+    _research_closes,
     ramp_cap,
     run_carryover_generation,
     run_proposal_generation,
@@ -114,8 +115,14 @@ async def _run_hold_sleeve(
         holdings_value or 1.0
     )
 
+    # 최초 매수: 보유가 없어 브로커 잔고에 가격이 없으면 연구 종가로 보강 —
+    # 없으면 안전자산 32% 초기 배분이 영원히 시작되지 않는다 (리뷰 P1-4).
+    code = sleeve["code"]
+    if code not in prices:
+        prices = {**prices, **_research_closes([code], as_of)}
+
     drafts = hold_sleeve_proposals(
-        code=sleeve["code"], weight=float(sleeve["weight"]), nav=nav,
+        code=code, weight=float(sleeve["weight"]), nav=nav,
         positions=positions, prices=prices,
     )
     inserted, batch_id = await _insert_proposals(

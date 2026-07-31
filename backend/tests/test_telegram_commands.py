@@ -33,8 +33,20 @@ def test_confirm_markup_two_step():
 
 
 def test_is_whitelisted():
-    update = {"callback_query": {"message": {"chat": {"id": 777}}}}
+    update = {"callback_query": {
+        "from": {"id": 777},
+        "message": {"chat": {"id": 777}},
+    }}
     assert is_whitelisted(update, "777") is True
     assert is_whitelisted(update, "888") is False
     assert is_whitelisted(update, "") is False
     assert is_whitelisted({}, "777") is False
+
+
+def test_is_whitelisted_rejects_other_group_member():
+    # 그룹 챗(chat=화이트리스트)이라도 누른 사람이 다르면 거부 (P2-7)
+    update = {"callback_query": {
+        "from": {"id": 999},
+        "message": {"chat": {"id": 777}},
+    }}
+    assert is_whitelisted(update, "777") is False

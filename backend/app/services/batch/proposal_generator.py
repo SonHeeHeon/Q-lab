@@ -534,6 +534,17 @@ async def run_proposal_generation(
 
     invested_exposure = min(1.0, sleeve_holdings_value / sleeve_nav)
 
+    # DC/IRP 위험자산 규제(≤70%) 감시선 — 계좌 전체 NAV 대비 위험 슬리브 노출
+    # (2026-08-01 리뷰 P1-8: 기존 dead code를 실제 경로에 배선).
+    dc_risk_warning: str | None = None
+    if strategy.universe.upper() == "ETF_KR_DC_RISK" and nav > 0:
+        risk_ratio = sleeve_holdings_value / nav
+        if risk_ratio > 0.70:
+            dc_risk_warning = (
+                f"위험자산 노출 {risk_ratio:.1%} > 규제 70% — 위험 슬리브 축소 필요"
+            )
+            logger.warning("DC risk exposure breach: %s", dc_risk_warning)
+
     ranked_codes: list[str] | None = None
     selected: list[str] = []
     universe: list[str] = []
@@ -667,6 +678,8 @@ async def run_proposal_generation(
     }
     if unclassified_skipped:
         summary["unclassified_skipped"] = unclassified_skipped
+    if dc_risk_warning:
+        summary["dc_risk_warning"] = dc_risk_warning
     logger.info("proposal generation %s", summary)
     if send_telegram and inserted:
         await _notify(drafts, summary, batch_id)

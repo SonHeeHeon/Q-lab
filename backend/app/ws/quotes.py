@@ -75,6 +75,16 @@ def set_upstream_client(client: KISWebSocketClient | None) -> None:
 
 @router.websocket("/ws/quotes")
 async def quotes_websocket(websocket: WebSocket) -> None:
+    # BaseHTTPMiddleware는 websocket scope를 통과시키므로 API 키 게이트를
+    # 여기서 별도 적용한다 — 키가 설정된 경우에만 검사(미설정=기존 동작).
+    api_key = settings.BACKEND_API_KEY or ""
+    if api_key:
+        import hmac
+
+        provided = websocket.query_params.get("key", "")
+        if not hmac.compare_digest(provided, api_key):
+            await websocket.close(code=4401)
+            return
     await quote_manager.connect(websocket)
     try:
         while True:

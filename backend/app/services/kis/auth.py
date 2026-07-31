@@ -260,6 +260,10 @@ class KISTokenManager:
             json.dumps(cache, ensure_ascii=False, indent=2, sort_keys=True),
             encoding="utf-8",
         )
+        # 라이브 토큰 파일은 소유자 전용 권한 — 동일 머신 타 계정 열람 방지.
+        import os
+
+        os.chmod(tmp_path, 0o600)
         tmp_path.replace(path)
 
     def _is_valid(self, expires_at: datetime | None) -> bool:

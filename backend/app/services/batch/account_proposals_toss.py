@@ -16,16 +16,23 @@ from backend.app.services.batch.daily_analysis import (
 from backend.app.services.accounts.auto_ramp import resolve_ramp_months
 from backend.app.services.batch.account_proposals import scope_us_positions
 from backend.app.services.batch.proposal_generator import (
+    _filter_rejected,
     _insert_proposals,
     _is_month_start,
+    _rejected_keys,
     _research_closes,
+    _save_rebalance_target,
     apply_ramp_cap,
+    build_carryover_drafts,
     build_rule_proposals,
+    carryover_residual_notional,
     full_rebalance_proposals,
+    load_rebalance_target,
     ramp_cap,
 )
 from backend.app.services.toss.rest_client import TossRestClient
 from research.backtest.engine import (
+    _allocate_equal_weight,
     _apply_abs_momentum_gate,
     apply_filters,
     get_universe,
@@ -94,9 +101,42 @@ async def _run_one_sleeve(
     scoped = scope_us_positions(positions, universe_set)
     sleeve_nav = nav * weight
     monthly_rotation = strategy.rebalance_freq == "MONTHLY"
+    account = AccountType.REAL  # US 제안의 계좌 표기 관례 (market='US'가 실질 구분)
 
     if monthly_rotation and not _is_month_start(as_of):
-        return {"skipped": "not month start"}
+        # 미이행 이월 — KR 경로와 동일 시맨틱 (리뷰 P1-5)
+        target = await load_rebalance_target(account, strategy.name, as_of)
+        if not target:
+            return {"skipped": "no saved target this period"}
+        missing = sorted(set(target) - set(prices))
+        prices = {**prices, **_research_closes(missing, as_of)}
+        residual = carryover_residual_notional(target, scoped, prices)
+        if residual < sleeve_nav * 0.01:
+            return {"skipped": f"carryover residual below 1% ({residual:.0f})"}
+        drafts = build_carryover_drafts(target, scoped, prices)
+        drafts = [d for d in drafts if d.qty > 0 and d.last_price > 0]
+        drafts = _filter_rejected(drafts, await _rejected_keys(account, as_of))
+        if profile is not None:
+            from datetime import datetime
+
+            months = resolve_ramp_months(
+                int(profile.ramp_in_months or 0), strategy.universe,
+                enabled_at=profile.quant_enabled_at,
+            )
+            cap = ramp_cap(profile.quant_enabled_at, months, now=datetime.now())
+            scoped_value = sum(scoped[c] * prices.get(c, 0.0) for c in scoped)
+            drafts = apply_ramp_cap(
+                drafts, cap=cap, sleeve_nav=sleeve_nav,
+                holdings_value=scoped_value,
+            )
+        inserted, batch_id = await _insert_proposals(
+            drafts, strategy=strategy, account=account, as_of=as_of, market="US",
+        )
+        return {
+            "proposal_date": as_of.isoformat(), "mode": "CARRYOVER",
+            "drafted": len(drafts), "inserted": inserted,
+            "residual": round(residual),
+        }
 
     if monthly_rotation:
         warnings: list[str] = []
@@ -126,6 +166,11 @@ async def _run_one_sleeve(
             positions=scoped, prices=prices, nav=sleeve_nav,
             selected=selected, slots=slots,
         )
+        # 이월(carryover)용 주기 목표 저장 — KR 경로와 동일 (리뷰 P1-5)
+        target_map = _allocate_equal_weight(
+            selected, nav=sleeve_nav, prices=prices, exposure=1.0, slots=slots,
+        )
+        await _save_rebalance_target(account, strategy.name, as_of, target_map)
     else:
         drafts = build_rule_proposals(
             strategy=strategy, positions=scoped, entry_prices=entry_prices,
@@ -133,6 +178,8 @@ async def _run_one_sleeve(
         )
 
     drafts = [d for d in drafts if d.qty > 0 and d.last_price > 0]
+    # 거절 존중 — 이번 주기 거절 (종목, 방향) 재제안 억제(위험규칙 예외).
+    drafts = _filter_rejected(drafts, await _rejected_keys(account, as_of))
     # 분할 진입(ramp) — 슬리브별 자동/수동 결정, 매수 예산만 캡(SELL 무변경).
     if profile is not None:
         from datetime import datetime
@@ -147,7 +194,7 @@ async def _run_one_sleeve(
             drafts, cap=cap, sleeve_nav=sleeve_nav, holdings_value=scoped_value,
         )
     inserted, batch_id = await _insert_proposals(
-        drafts, strategy=strategy, account=AccountType.REAL, as_of=as_of,
+        drafts, strategy=strategy, account=account, as_of=as_of,
         market="US",
     )
     return {

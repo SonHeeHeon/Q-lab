@@ -58,10 +58,15 @@ def confirm_markup(action: str, target: str, batch_id: str | None) -> dict:
 
 
 def is_whitelisted(update: dict, chat_id: str) -> bool:
-    """콜백 발신 chat이 설정된 chat_id와 일치하는지 (불일치=무시)."""
+    """콜백의 chat과 **누른 사람(from.id)** 둘 다 설정 chat_id와 일치해야 통과.
+
+    개인 챗에선 둘이 같아 무해하고, 그룹 챗으로 옮기면 그룹원 전원이 주문을
+    승인하게 되는 구멍을 from.id 검사가 막는다 (2026-08-01 리뷰 P2-7).
+    """
     cb = update.get("callback_query") or {}
-    sender = str(((cb.get("message") or {}).get("chat") or {}).get("id", ""))
-    return bool(chat_id) and sender == str(chat_id)
+    chat = str(((cb.get("message") or {}).get("chat") or {}).get("id", ""))
+    sender = str((cb.get("from") or {}).get("id", ""))
+    return bool(chat_id) and chat == str(chat_id) and sender == str(chat_id)
 
 
 class TelegramCommandRunner:
