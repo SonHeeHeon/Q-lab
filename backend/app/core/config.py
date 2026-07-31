@@ -66,6 +66,18 @@ class Settings(BaseSettings):
     KIS_ISA_APP_SECRET: SecretStr = SecretStr("")
     KIS_ISA_ACCOUNT_NO: str = ""
 
+    KIS_DC_APP_KEY: SecretStr = SecretStr("")
+    KIS_DC_APP_SECRET: SecretStr = SecretStr("")
+    KIS_DC_ACCOUNT_NO: str = ""
+
+    KIS_IRP_APP_KEY: SecretStr = SecretStr("")
+    KIS_IRP_APP_SECRET: SecretStr = SecretStr("")
+    KIS_IRP_ACCOUNT_NO: str = ""
+
+    KIS_PENSION_APP_KEY: SecretStr = SecretStr("")
+    KIS_PENSION_APP_SECRET: SecretStr = SecretStr("")
+    KIS_PENSION_ACCOUNT_NO: str = ""
+
     KIS_DEFAULT_ACCOUNT: AccountType = AccountType.PAPER
     KIS_TOKEN_SAFETY_BUFFER_SECONDS: int = 300
     KIS_ACCESS_TOKEN_TTL_SECONDS: int = 24 * 60 * 60
@@ -278,32 +290,43 @@ class Settings(BaseSettings):
         return [AccountType(value) for value in values]
 
     def kis_account(self, account_type: AccountType) -> KISAccount:
-        if account_type is AccountType.PAPER:
-            return KISAccount(
-                type=AccountType.PAPER,
-                app_key=self.KIS_PAPER_APP_KEY,
-                app_secret=self.KIS_PAPER_APP_SECRET,
-                account_no=self.KIS_PAPER_ACCOUNT_NO,
-                is_active=bool(self.KIS_PAPER_APP_KEY.get_secret_value()),
-            )
-        if account_type is AccountType.REAL:
-            return KISAccount(
-                type=AccountType.REAL,
-                app_key=self.KIS_REAL_APP_KEY,
-                app_secret=self.KIS_REAL_APP_SECRET,
-                account_no=self.KIS_REAL_ACCOUNT_NO,
-                is_active=bool(self.KIS_REAL_APP_KEY.get_secret_value()),
-            )
-        if account_type is AccountType.ISA:
-            return KISAccount(
-                type=AccountType.ISA,
-                app_key=self.KIS_ISA_APP_KEY,
-                app_secret=self.KIS_ISA_APP_SECRET,
-                account_no=self.KIS_ISA_ACCOUNT_NO,
-                is_active=bool(self.KIS_ISA_APP_KEY.get_secret_value()),
-            )
-
-        raise ValueError(f"Unsupported account type: {account_type!r}")
+        creds = {
+            AccountType.PAPER: (
+                self.KIS_PAPER_APP_KEY, self.KIS_PAPER_APP_SECRET,
+                self.KIS_PAPER_ACCOUNT_NO,
+            ),
+            AccountType.REAL: (
+                self.KIS_REAL_APP_KEY, self.KIS_REAL_APP_SECRET,
+                self.KIS_REAL_ACCOUNT_NO,
+            ),
+            AccountType.ISA: (
+                self.KIS_ISA_APP_KEY, self.KIS_ISA_APP_SECRET,
+                self.KIS_ISA_ACCOUNT_NO,
+            ),
+            AccountType.DC: (
+                self.KIS_DC_APP_KEY, self.KIS_DC_APP_SECRET,
+                self.KIS_DC_ACCOUNT_NO,
+            ),
+            AccountType.IRP: (
+                self.KIS_IRP_APP_KEY, self.KIS_IRP_APP_SECRET,
+                self.KIS_IRP_ACCOUNT_NO,
+            ),
+            AccountType.PENSION: (
+                self.KIS_PENSION_APP_KEY, self.KIS_PENSION_APP_SECRET,
+                self.KIS_PENSION_ACCOUNT_NO,
+            ),
+        }
+        try:
+            app_key, app_secret, account_no = creds[account_type]
+        except KeyError:
+            raise ValueError(f"Unsupported account type: {account_type!r}") from None
+        return KISAccount(
+            type=account_type,
+            app_key=app_key,
+            app_secret=app_secret,
+            account_no=account_no,
+            is_active=bool(app_key.get_secret_value()),
+        )
 
 
 settings = Settings()

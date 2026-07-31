@@ -33,6 +33,13 @@ class OrderBlocked(Exception):
     """Raised when the safety gateway blocks an order before it reaches a broker."""
 
 
+# 연금계좌: KIS 주문 TR(퇴직연금 전용 TR 여부) 미검증 — 검증 완료 전까지 주문
+# 차단(자문 모드). 잔고/시세 조회는 막지 않는다.
+ORDER_UNVERIFIED_ACCOUNT_TYPES = frozenset(
+    {AccountType.DC, AccountType.IRP, AccountType.PENSION}
+)
+
+
 def resolve_live_mode(broker: BrokerType, account_type: AccountType) -> bool:
     """Whether an order risks real money and must pass the safety gate.
 
@@ -73,6 +80,13 @@ def guard_order(
     A no-op for KIS PAPER (virtual) orders. Raises ``OrderBlocked`` if the order
     must not proceed. This is the single choke point every order path calls.
     """
+    if (
+        request.broker is BrokerType.KIS
+        and request.account_type in ORDER_UNVERIFIED_ACCOUNT_TYPES
+    ):
+        raise OrderBlocked(
+            f"{request.account_type.value} 계좌는 주문 TR 미검증(자문 모드) — 실행 불가"
+        )
     live_mode = resolve_live_mode(request.broker, request.account_type)
     notional = estimate_notional(
         price=request.price,

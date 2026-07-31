@@ -36,11 +36,10 @@ LIVE_ENDPOINTS = KISEndpoints(
 
 
 def endpoints_for(account_type: AccountType) -> KISEndpoints:
+    # PAPER(모의)만 모의 도메인 — 실계좌(REAL/ISA/DC/IRP/PENSION)는 전부 LIVE.
     if account_type is AccountType.PAPER:
         return PAPER_ENDPOINTS
-    if account_type in {AccountType.REAL, AccountType.ISA}:
-        return LIVE_ENDPOINTS
-    raise ValueError(f"Unsupported account type: {account_type!r}")
+    return LIVE_ENDPOINTS
 
 
 class KISAccountRegistry:
