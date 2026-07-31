@@ -14,6 +14,7 @@ from datetime import datetime
 
 from sqlalchemy import select
 
+from backend.app.services.accounts.auto_ramp import resolve_ramp_months
 from backend.app.services.accounts.profiles import ensure_account_profiles
 from backend.app.services.batch.daily_analysis import (
     latest_research_price_date,
@@ -163,22 +164,25 @@ async def run_all_account_proposals(*, send_telegram: bool = True) -> dict:
 
         account = AccountType(profile.account_type)
         as_of = latest_research_price_date()
-        # 분할 진입 캡 — 퀀트 ON 후 경과 개월 기준 (0/미기록=캡 없음)
-        cap = ramp_cap(
-            profile.quant_enabled_at,
-            int(profile.ramp_in_months or 0),
-            now=datetime.now(),
-        )
         acct_result: dict[str, dict] = {}
         for sleeve in sleeves:
             label = sleeve.get("name") or f"hold:{sleeve.get('code')}"
             try:
                 if sleeve["type"] == "strategy":
+                    strategy_def = load_strategy(sleeve["name"])
+                    # 분할 진입 캡 — 슬리브별 결정: 수동값은 그대로, AUTO(-1)는
+                    # ON 시각 국면 × 유니버스 결정표(auto_ramp). 매도는 캡 무관.
+                    months = resolve_ramp_months(
+                        int(profile.ramp_in_months or 0),
+                        strategy_def.universe,
+                        enabled_at=profile.quant_enabled_at,
+                    )
+                    cap = ramp_cap(
+                        profile.quant_enabled_at, months, now=datetime.now()
+                    )
                     # 현행 2슬리브 시맨틱 유지: MONTHLY 로테이션 전략은 월초
                     # 전체 diff만, 그 외(주식형)는 매일 규칙 모드.
-                    monthly_rotation = (
-                        load_strategy(sleeve["name"]).rebalance_freq == "MONTHLY"
-                    )
+                    monthly_rotation = strategy_def.rebalance_freq == "MONTHLY"
                     if monthly_rotation and not _is_month_start(as_of):
                         # 미이행 이월: 이번 달 목표가 남아 있으면 재제안
                         acct_result[label] = await run_carryover_generation(

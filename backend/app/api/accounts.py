@@ -56,8 +56,9 @@ def apply_account_patch(
             ensure_ascii=False,
         )
     if patch.ramp_in_months is not None:
-        if not (0 <= patch.ramp_in_months <= 24):
-            raise ValueError("분할 진입 개월은 0~24 사이여야 합니다")
+        # -1 = 자동(상황 판단, ramp study 결정표), 0 = 안 함, 1~24 = 수동
+        if not (-1 <= patch.ramp_in_months <= 24):
+            raise ValueError("분할 진입 개월은 -1(자동)~24 사이여야 합니다")
         profile.ramp_in_months = patch.ramp_in_months
     if patch.quant_enabled is not None:
         if (

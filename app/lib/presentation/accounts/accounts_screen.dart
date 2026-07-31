@@ -303,10 +303,11 @@ class _AccountCardState extends ConsumerState<_AccountCard> {
               const Text('분할 진입', style: TextStyle(fontSize: 13)),
               const SizedBox(width: 12),
               DropdownButton<int>(
-                value: const [0, 3, 6, 12].contains(account.rampInMonths)
+                value: const [-1, 0, 3, 6, 12].contains(account.rampInMonths)
                     ? account.rampInMonths
-                    : 0,
+                    : -1,
                 items: const [
+                  DropdownMenuItem(value: -1, child: Text('자동(권장)')),
                   DropdownMenuItem(value: 0, child: Text('안 함(일괄)')),
                   DropdownMenuItem(value: 3, child: Text('3개월')),
                   DropdownMenuItem(value: 6, child: Text('6개월')),
@@ -321,7 +322,8 @@ class _AccountCardState extends ConsumerState<_AccountCard> {
               const SizedBox(width: 8),
               const Expanded(
                 child: Text(
-                  '퀀트 ON 후 N개월에 걸쳐 매수 예산을 단계 투입(매도는 즉시)',
+                  '자동 = 퀀트 ON 시점의 시장 국면·슬리브별로 분할/올인을 스스로 결정'
+                  ' (급락 후=올인, KR 조정=6개월 등 백테스트 결정표). 매도는 항상 즉시.',
                   style: TextStyle(fontSize: 11, color: Colors.grey),
                 ),
               ),

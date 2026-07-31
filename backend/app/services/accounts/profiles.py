@@ -199,6 +199,7 @@ async def ensure_account_profiles(session) -> None:
             account_type=acct if broker == "KIS" else None,
             profile_type=DEFAULT_PROFILE_TYPES[key],
             quant_enabled=False,  # 스펙: 전 계좌 기본 OFF
+            ramp_in_months=-1,  # 기본 = 자동(상황 판단, ramp study 결정표)
             sleeves_json=json.dumps(default_sleeves(key), ensure_ascii=False),
         ))
     await session.commit()

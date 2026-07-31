@@ -13,13 +13,16 @@ from backend.app.services.batch.daily_analysis import (
     latest_research_price_date,
     load_strategy,
 )
+from backend.app.services.accounts.auto_ramp import resolve_ramp_months
 from backend.app.services.batch.account_proposals import scope_us_positions
 from backend.app.services.batch.proposal_generator import (
     _insert_proposals,
     _is_month_start,
     _research_closes,
+    apply_ramp_cap,
     build_rule_proposals,
     full_rebalance_proposals,
+    ramp_cap,
 )
 from backend.app.services.toss.rest_client import TossRestClient
 from research.backtest.engine import (
@@ -72,6 +75,7 @@ async def run_toss_sleeves(
             results[name] = await _run_one_sleeve(
                 name, float(sleeve["weight"]), as_of=as_of, nav=nav,
                 positions=positions, entry_prices=entry_prices, prices=prices,
+                profile=profile,
             )
         except Exception as exc:  # noqa: BLE001 — 슬리브 실패 격리
             logger.exception("toss sleeve %s failed", name)
@@ -82,7 +86,7 @@ async def run_toss_sleeves(
 async def _run_one_sleeve(
     name: str, weight: float, *, as_of, nav: float,
     positions: dict[str, int], entry_prices: dict[str, float],
-    prices: dict[str, float],
+    prices: dict[str, float], profile=None,
 ) -> dict:
     strategy = load_strategy(name)
     universe = get_universe(strategy.universe, as_of=as_of, db_path=research_db_path)
@@ -129,6 +133,19 @@ async def _run_one_sleeve(
         )
 
     drafts = [d for d in drafts if d.qty > 0 and d.last_price > 0]
+    # 분할 진입(ramp) — 슬리브별 자동/수동 결정, 매수 예산만 캡(SELL 무변경).
+    if profile is not None:
+        from datetime import datetime
+
+        months = resolve_ramp_months(
+            int(profile.ramp_in_months or 0), strategy.universe,
+            enabled_at=profile.quant_enabled_at,
+        )
+        cap = ramp_cap(profile.quant_enabled_at, months, now=datetime.now())
+        scoped_value = sum(scoped[c] * prices.get(c, 0.0) for c in scoped)
+        drafts = apply_ramp_cap(
+            drafts, cap=cap, sleeve_nav=sleeve_nav, holdings_value=scoped_value,
+        )
     inserted, batch_id = await _insert_proposals(
         drafts, strategy=strategy, account=AccountType.REAL, as_of=as_of,
         market="US",
