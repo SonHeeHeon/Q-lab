@@ -36,6 +36,7 @@ from backend.app.services.batch.proposal_generator import (
     run_sleeve_proposals,
 )
 from backend.app.services.batch.us_advisory import generate_us_advisory
+from backend.app.services.brokers.factory import broker_client
 from backend.app.services.kis.rest_client import KISRestClient, KISRestError
 from backend.app.services.orders.guard import (
     OrderBlocked,
@@ -197,6 +198,32 @@ async def reject_proposal(
     return ApiEnvelope(data=_to_response(row), error=None)
 
 
+def _order_request_for(
+    proposal: OrderProposal, *, client_order_id: str
+) -> OrderRequest:
+    """제안 → 주문요청. market='US'는 Toss(계좌 개념·zfill 없음), 그 외 KIS."""
+    if (proposal.market or "KR").upper() == "US":
+        return OrderRequest(
+            broker=BrokerType.TOSS,
+            client_order_id=client_order_id,
+            stock_code=proposal.stock_code,
+            direction=TradeDirection(proposal.side),
+            quantity=proposal.qty,
+            order_type=OrderType.LIMIT,
+            price=proposal.limit_price or Decimal("0"),
+        )
+    return OrderRequest(
+        broker=BrokerType.KIS,
+        account_type=AccountType(proposal.account_type),
+        client_order_id=client_order_id,
+        stock_code=proposal.stock_code.zfill(6),
+        direction=TradeDirection(proposal.side),
+        quantity=proposal.qty,
+        order_type=OrderType.LIMIT,
+        price=proposal.limit_price or Decimal("0"),
+    )
+
+
 @router.post("/{proposal_id}/approve", response_model=ApiEnvelope[ApproveResult])
 async def approve_proposal(
     proposal_id: int,
@@ -257,15 +284,8 @@ async def approve_proposal(
             error=None,
         )
 
-    request = OrderRequest(
-        broker=BrokerType.KIS,
-        account_type=AccountType(proposal.account_type),
-        client_order_id=proposal.client_order_id,
-        stock_code=proposal.stock_code.zfill(6),
-        direction=TradeDirection(proposal.side),
-        quantity=proposal.qty,
-        order_type=OrderType.LIMIT,
-        price=proposal.limit_price or Decimal("0"),
+    request = _order_request_for(
+        proposal, client_order_id=proposal.client_order_id
     )
 
     try:
@@ -281,7 +301,12 @@ async def approve_proposal(
         return _blocked_envelope(str(exc))
 
     try:
-        order = await kis_client.place_order(request)
+        if request.broker is BrokerType.TOSS:
+            # Toss 실행 — toss_is_mock=true면 클라이언트가 모의 응답을 돌려준다
+            # (실체결 없음). 실주문 전환은 라이브 잠금 해제 + 소액 스모크 후.
+            order = await broker_client(BrokerType.TOSS).place_order(request)
+        else:
+            order = await kis_client.place_order(request)
     except KISRestError as exc:
         await _mark(session, proposal, "FAILED", note=str(exc))
         envelope = ApiEnvelope(
@@ -293,6 +318,17 @@ async def approve_proposal(
         return JSONResponse(
             status_code=exc.status_code if exc.status_code and exc.status_code >= 400 else 502,
             content=envelope.model_dump(mode="json"),
+        )
+    except Exception as exc:  # noqa: BLE001 — Toss 오류: 재시도 금지, 실패 마킹
+        await _mark(session, proposal, "FAILED", note=str(exc))
+        envelope = ApiEnvelope(
+            data=None,
+            error=ApiError(code="TOSS_ORDER_FAILED", message=str(exc), details=None),
+        )
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(
+            status_code=502, content=envelope.model_dump(mode="json")
         )
 
     persistence = await _persist_trade_skeleton(session, order, request)
