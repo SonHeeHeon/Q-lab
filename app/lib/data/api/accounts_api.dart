@@ -47,6 +47,26 @@ class SleeveConfig {
       };
 }
 
+/// 계좌에 추가 가능한 전략 항목 ('슬리브 추가' 바텀시트용 카탈로그).
+class SleeveCatalogEntry {
+  SleeveCatalogEntry({
+    required this.name,
+    this.universe,
+    this.description = '',
+  });
+
+  final String name;
+  final String? universe;
+  final String description;
+
+  factory SleeveCatalogEntry.fromJson(Map<String, dynamic> json) =>
+      SleeveCatalogEntry(
+        name: json['name'] as String,
+        universe: json['universe'] as String?,
+        description: (json['description'] as String?) ?? '',
+      );
+}
+
 class AccountProfileInfo {
   AccountProfileInfo({
     required this.accountKey,
@@ -56,6 +76,8 @@ class AccountProfileInfo {
     required this.quantEnabled,
     required this.connected,
     required this.sleeves,
+    this.availableSleeves = const [],
+    this.holdAllowed = true,
   });
 
   final String accountKey;
@@ -65,6 +87,8 @@ class AccountProfileInfo {
   final bool quantEnabled;
   final bool connected;
   final List<SleeveConfig> sleeves;
+  final List<SleeveCatalogEntry> availableSleeves;
+  final bool holdAllowed;
 
   factory AccountProfileInfo.fromJson(Map<String, dynamic> json) =>
       AccountProfileInfo(
@@ -77,6 +101,10 @@ class AccountProfileInfo {
         sleeves: ((json['sleeves'] as List?) ?? const [])
             .map((e) => SleeveConfig.fromJson(e as Map<String, dynamic>))
             .toList(),
+        availableSleeves: ((json['available_sleeves'] as List?) ?? const [])
+            .map((e) => SleeveCatalogEntry.fromJson(e as Map<String, dynamic>))
+            .toList(),
+        holdAllowed: (json['hold_allowed'] as bool?) ?? true,
       );
 }
 

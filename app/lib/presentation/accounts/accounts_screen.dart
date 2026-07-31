@@ -132,6 +132,107 @@ class _AccountCardState extends ConsumerState<_AccountCard> {
     }
   }
 
+  void _addSleeve(SleeveConfig sleeve) {
+    setState(() => _draftSleeves = [..._draftSleeves, sleeve]);
+  }
+
+  Future<void> _showAddSleeveSheet(BuildContext context) async {
+    // 이미 담긴 전략은 목록에서 제외
+    final usedNames = {for (final s in _draftSleeves) if (s.name != null) s.name};
+    final candidates = account.availableSleeves
+        .where((e) => !usedNames.contains(e.name))
+        .toList();
+    final codeController = TextEditingController();
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: EdgeInsets.only(
+            left: 16, right: 16, top: 16,
+            bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 16,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '슬리브 추가 — ${_profileLabels[account.profileType] ?? account.profileType} 계좌 허용 전략',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 8),
+              if (candidates.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 8),
+                  child: Text('추가 가능한 전략이 없습니다',
+                      style: TextStyle(fontSize: 12)),
+                ),
+              Flexible(
+                child: ListView(
+                  shrinkWrap: true,
+                  children: [
+                    for (final entry in candidates)
+                      ListTile(
+                        dense: true,
+                        title: Text(entry.name),
+                        subtitle: Text(
+                          '${entry.universe ?? ''} · ${entry.description}',
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 11),
+                        ),
+                        onTap: () {
+                          Navigator.of(sheetContext).pop();
+                          _addSleeve(SleeveConfig(
+                            type: 'strategy', name: entry.name, weight: 0.0,
+                          ));
+                        },
+                      ),
+                  ],
+                ),
+              ),
+              if (account.holdAllowed) ...[
+                const Divider(),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: codeController,
+                        decoration: const InputDecoration(
+                          isDense: true,
+                          labelText: '고정 보유 종목코드 (예: 153130)',
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    FilledButton(
+                      onPressed: () {
+                        final code = codeController.text.trim();
+                        if (code.isEmpty) return;
+                        Navigator.of(sheetContext).pop();
+                        _addSleeve(SleeveConfig(
+                          type: 'hold', code: code, weight: 0.0,
+                        ));
+                      },
+                      child: const Text('추가'),
+                    ),
+                  ],
+                ),
+              ],
+              const SizedBox(height: 4),
+              const Text(
+                '추가된 슬리브는 비중 0%로 들어옵니다 — 슬라이더로 배분 후 '
+                '합 100%를 맞춰 저장하세요. (계좌 규정 위반은 서버가 거부)',
+                style: TextStyle(fontSize: 11, color: Colors.grey),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final locked = account.accountKey != 'KIS:PAPER';
@@ -238,8 +339,30 @@ class _AccountCardState extends ConsumerState<_AccountCard> {
                     textAlign: TextAlign.end,
                   ),
                 ),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: '슬리브 삭제',
+                  icon: const Icon(Icons.delete_outline, size: 18),
+                  onPressed: _saving || _draftSleeves.length <= 1
+                      ? null // 마지막 슬리브는 삭제 불가(빈 구성 방지)
+                      : () => setState(() {
+                            _draftSleeves = [
+                              for (var j = 0; j < _draftSleeves.length; j++)
+                                if (j != i) _draftSleeves[j],
+                            ];
+                          }),
+                ),
               ],
             ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              onPressed: _saving ? null : () => _showAddSleeveSheet(context),
+              icon: const Icon(Icons.add, size: 16),
+              label: const Text('슬리브 추가'),
+            ),
+          ),
+          const SizedBox(height: 4),
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
