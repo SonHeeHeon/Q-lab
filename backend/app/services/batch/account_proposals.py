@@ -60,6 +60,13 @@ def hold_sleeve_proposals(
     )]
 
 
+def scope_us_positions(
+    positions: dict[str, int], universe: set[str]
+) -> dict[str, int]:
+    """US 보유를 슬리브 유니버스 소속으로 스코핑 — 티커 원형 유지(zfill 금지)."""
+    return {code: qty for code, qty in positions.items() if code in universe}
+
+
 def _dc_exposure_warning(
     *, risky_value: float, nav: float, profile_type: str
 ) -> str | None:
