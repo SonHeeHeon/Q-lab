@@ -8,10 +8,8 @@
 from __future__ import annotations
 
 import json
-import uuid
 from datetime import date as Date
 from datetime import datetime
-from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
@@ -20,33 +18,22 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.api.portfolio import (
-    _find_trade_by_client_order_id,
-    _persist_trade_skeleton,
     _schedule_order_tracking,
     get_kis_rest_client,
 )
-from backend.app.schemas.portfolio import (
-    ApiEnvelope,
-    ApiError,
-    OrderRequest,
-    OrderType,
-)
+from backend.app.schemas.portfolio import ApiEnvelope, ApiError
 from backend.app.services.batch.proposal_generator import (
     run_proposal_generation,
     run_sleeve_proposals,
 )
 from backend.app.services.batch.us_advisory import generate_us_advisory
-from backend.app.services.brokers.factory import broker_client
-from backend.app.services.kis.rest_client import KISRestClient, KISRestError
-from backend.app.services.orders.guard import (
-    OrderBlocked,
-    assert_daily_loss_ok,
-    guard_order,
+from backend.app.services.kis.rest_client import KISRestClient
+from backend.app.services.orders.approval import (
+    approve_and_execute,
+    order_request_for as _order_request_for,  # 기존 테스트 호환 별칭
 )
 from shared.db.models import OrderProposal
 from shared.db.session import get_service_session
-from shared.domain.account import AccountType, BrokerType
-from shared.domain.trade import TradeDirection
 
 router = APIRouter(prefix="/api/proposals", tags=["proposals"])
 
@@ -198,32 +185,6 @@ async def reject_proposal(
     return ApiEnvelope(data=_to_response(row), error=None)
 
 
-def _order_request_for(
-    proposal: OrderProposal, *, client_order_id: str
-) -> OrderRequest:
-    """제안 → 주문요청. market='US'는 Toss(계좌 개념·zfill 없음), 그 외 KIS."""
-    if (proposal.market or "KR").upper() == "US":
-        return OrderRequest(
-            broker=BrokerType.TOSS,
-            client_order_id=client_order_id,
-            stock_code=proposal.stock_code,
-            direction=TradeDirection(proposal.side),
-            quantity=proposal.qty,
-            order_type=OrderType.LIMIT,
-            price=proposal.limit_price or Decimal("0"),
-        )
-    return OrderRequest(
-        broker=BrokerType.KIS,
-        account_type=AccountType(proposal.account_type),
-        client_order_id=client_order_id,
-        stock_code=proposal.stock_code.zfill(6),
-        direction=TradeDirection(proposal.side),
-        quantity=proposal.qty,
-        order_type=OrderType.LIMIT,
-        price=proposal.limit_price or Decimal("0"),
-    )
-
-
 @router.post("/{proposal_id}/approve", response_model=ApiEnvelope[ApproveResult])
 async def approve_proposal(
     proposal_id: int,
@@ -236,111 +197,44 @@ async def approve_proposal(
     - 원자적 클레임: PROPOSED에서만 APPROVED로 전이(연타 시 두 번째는 409)
     - 크래시 복구: 이미 APPROVED인 제안은 같은 client_order_id로 멱등 재시도
     - 차단(킬스위치/한도/일일손실): status=FAILED + 403 — 재생성으로만 부활
+
+    본체는 services.orders.approval.approve_and_execute — 텔레그램 승인
+    트랙과 공유. 이 함수는 Outcome→HTTP 표현 매핑만 담당한다.
     """
-    proposal = await session.get(OrderProposal, proposal_id)
-    if proposal is None:
-        raise HTTPException(status_code=404, detail="Proposal not found.")
-
-    if proposal.status == "PROPOSED":
-        client_order_id = uuid.uuid4().hex
-        claimed = await session.execute(
-            update(OrderProposal)
-            .where(OrderProposal.id == proposal_id)
-            .where(OrderProposal.status == "PROPOSED")
-            .values(
-                status="APPROVED",
-                approved_at=datetime.now(),
-                client_order_id=client_order_id,
-                updated_at=datetime.now(),
-            )
-        )
-        await session.commit()
-        if (claimed.rowcount or 0) != 1:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Proposal already handled.",
-            )
-        await session.refresh(proposal)
-    elif proposal.status == "APPROVED" and proposal.client_order_id:
-        # 제출 도중 크래시했던 승인 건 — 같은 키로 멱등 재시도.
-        pass
-    else:
+    outcome = await approve_and_execute(
+        proposal_id, session=session, kis_client=kis_client
+    )
+    if outcome.status == "not_found":
+        raise HTTPException(status_code=404, detail=outcome.note)
+    if outcome.status == "conflict":
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Proposal is {proposal.status}, not approvable.",
+            status_code=status.HTTP_409_CONFLICT, detail=outcome.note
         )
-
-    existing = await _find_trade_by_client_order_id(
-        session, proposal.client_order_id
-    )
-    if existing is not None:
-        await _mark(session, proposal, "SUBMITTED", trade_id=existing.id)
-        return ApiEnvelope(
-            data=ApproveResult(
-                proposal=_to_response(proposal),
-                trade_id=existing.id,
-                note="idempotent replay — order already submitted",
-            ),
-            error=None,
-        )
-
-    request = _order_request_for(
-        proposal, client_order_id=proposal.client_order_id
-    )
-
-    try:
-        guard_order(request, reference_price=proposal.last_price)
-        await assert_daily_loss_ok(
-            session,
-            broker=request.broker,
-            account_type=request.account_type,
-            direction=request.direction,
-        )
-    except OrderBlocked as exc:
-        await _mark(session, proposal, "FAILED", note=str(exc))
-        return _blocked_envelope(str(exc))
-
-    try:
-        if request.broker is BrokerType.TOSS:
-            # Toss 실행 — toss_is_mock=true면 클라이언트가 모의 응답을 돌려준다
-            # (실체결 없음). 실주문 전환은 라이브 잠금 해제 + 소액 스모크 후.
-            order = await broker_client(BrokerType.TOSS).place_order(request)
-        else:
-            order = await kis_client.place_order(request)
-    except KISRestError as exc:
-        await _mark(session, proposal, "FAILED", note=str(exc))
+    if outcome.status == "blocked":
+        return _blocked_envelope(outcome.note)
+    if outcome.status == "failed":
         envelope = ApiEnvelope(
             data=None,
-            error=ApiError(code="KIS_ORDER_FAILED", message=str(exc), details=exc.payload),
+            error=ApiError(
+                code=outcome.error_code or "ORDER_FAILED",
+                message=outcome.note,
+                details=outcome.error_payload,
+            ),
         )
         from fastapi.responses import JSONResponse
 
         return JSONResponse(
-            status_code=exc.status_code if exc.status_code and exc.status_code >= 400 else 502,
+            status_code=outcome.http_status,
             content=envelope.model_dump(mode="json"),
         )
-    except Exception as exc:  # noqa: BLE001 — Toss 오류: 재시도 금지, 실패 마킹
-        await _mark(session, proposal, "FAILED", note=str(exc))
-        envelope = ApiEnvelope(
-            data=None,
-            error=ApiError(code="TOSS_ORDER_FAILED", message=str(exc), details=None),
-        )
-        from fastapi.responses import JSONResponse
 
-        return JSONResponse(
-            status_code=502, content=envelope.model_dump(mode="json")
-        )
-
-    persistence = await _persist_trade_skeleton(session, order, request)
-    await _mark(session, proposal, "SUBMITTED", trade_id=persistence.trade_id)
-    if persistence.persisted and persistence.trade_id and order.kis_order_no:
-        background_tasks.add_task(_schedule_order_tracking, persistence.trade_id)
-
+    if outcome.should_track:
+        background_tasks.add_task(_schedule_order_tracking, outcome.trade_id)
     return ApiEnvelope(
         data=ApproveResult(
-            proposal=_to_response(proposal),
-            trade_id=persistence.trade_id,
-            note=persistence.note,
+            proposal=_to_response(outcome.proposal),
+            trade_id=outcome.trade_id,
+            note=outcome.note,
         ),
         error=None,
     )
@@ -384,33 +278,6 @@ async def approve_batch(
     return ApiEnvelope(
         data={"batch_id": batch_id, "total": len(rows), **outcomes}, error=None
     )
-
-
-async def _mark(
-    session: AsyncSession,
-    proposal: OrderProposal,
-    new_status: str,
-    *,
-    trade_id: int | None = None,
-    note: str | None = None,
-) -> None:
-    values: dict[str, Any] = {"status": new_status, "updated_at": datetime.now()}
-    if trade_id is not None:
-        values["trade_id"] = trade_id
-    if note:
-        reason: dict[str, Any] = {}
-        if proposal.reason_json:
-            try:
-                reason = json.loads(proposal.reason_json)
-            except ValueError:
-                reason = {"raw": proposal.reason_json}
-        reason["error"] = note[:300]
-        values["reason_json"] = json.dumps(reason, ensure_ascii=False)
-    await session.execute(
-        update(OrderProposal).where(OrderProposal.id == proposal.id).values(**values)
-    )
-    await session.commit()
-    await session.refresh(proposal)
 
 
 def _blocked_envelope(message: str):
