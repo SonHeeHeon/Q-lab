@@ -78,6 +78,7 @@ class AccountProfileInfo {
     required this.sleeves,
     this.availableSleeves = const [],
     this.holdAllowed = true,
+    this.rampInMonths = 0,
   });
 
   final String accountKey;
@@ -89,6 +90,9 @@ class AccountProfileInfo {
   final List<SleeveConfig> sleeves;
   final List<SleeveCatalogEntry> availableSleeves;
   final bool holdAllowed;
+
+  /// 분할 진입 개월(0=끔) — k개월차 매수 예산을 k/N로 제한.
+  final int rampInMonths;
 
   factory AccountProfileInfo.fromJson(Map<String, dynamic> json) =>
       AccountProfileInfo(
@@ -105,6 +109,7 @@ class AccountProfileInfo {
             .map((e) => SleeveCatalogEntry.fromJson(e as Map<String, dynamic>))
             .toList(),
         holdAllowed: (json['hold_allowed'] as bool?) ?? true,
+        rampInMonths: (json['ramp_in_months'] as num?)?.toInt() ?? 0,
       );
 }
 
@@ -127,6 +132,7 @@ class AccountsApi {
     String? profileType,
     bool? quantEnabled,
     List<SleeveConfig>? sleeves,
+    int? rampInMonths,
   }) async {
     final dio = _ref.read(dioProvider);
     await dio.patch<dynamic>(
@@ -136,6 +142,7 @@ class AccountsApi {
         if (quantEnabled != null) 'quant_enabled': quantEnabled,
         if (sleeves != null)
           'sleeves': sleeves.map((s) => s.toJson()).toList(),
+        if (rampInMonths != null) 'ramp_in_months': rampInMonths,
       },
     );
   }

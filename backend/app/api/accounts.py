@@ -7,6 +7,7 @@ KIS:PAPER 외 계좌의 quant_enabled=true는 403 (스펙 §라이브 잠금 —
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -34,6 +35,7 @@ class AccountPatch(BaseModel):
     profile_type: str | None = None
     quant_enabled: bool | None = None
     sleeves: list[dict] | None = None
+    ramp_in_months: int | None = None  # 0=끔, 최대 24
 
 
 class LiveLockError(Exception):
@@ -53,6 +55,10 @@ def apply_account_patch(
             validate_sleeves(patch.sleeves, profile_type=profile.profile_type),
             ensure_ascii=False,
         )
+    if patch.ramp_in_months is not None:
+        if not (0 <= patch.ramp_in_months <= 24):
+            raise ValueError("분할 진입 개월은 0~24 사이여야 합니다")
+        profile.ramp_in_months = patch.ramp_in_months
     if patch.quant_enabled is not None:
         if (
             patch.quant_enabled
@@ -62,6 +68,9 @@ def apply_account_patch(
             raise LiveLockError(
                 "실계좌 퀀트는 잠금 상태입니다 — 실전 운용 사전작업 완료 후 해제"
             )
+        if patch.quant_enabled and not profile.quant_enabled:
+            # OFF→ON 전이 — ramp-in 경과 개월의 기준 시각
+            profile.quant_enabled_at = datetime.now()
         profile.quant_enabled = patch.quant_enabled
     return profile
 
@@ -83,6 +92,7 @@ def _serialize(profile: AccountProfile) -> dict:
         "sleeves": json.loads(profile.sleeves_json),
         "available_sleeves": available_sleeves(profile.profile_type),
         "hold_allowed": HOLD_ALLOWED.get(profile.profile_type, True),
+        "ramp_in_months": profile.ramp_in_months,
     }
 
 

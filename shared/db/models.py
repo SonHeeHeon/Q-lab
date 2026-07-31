@@ -273,6 +273,12 @@ class AccountProfile(ServiceBase):
     quant_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("0")
     )
+    # 퀀트 ON 시각 — ramp-in(분할 진입) 경과 개월 계산 기준. OFF→ON 전이 때 스탬프.
+    quant_enabled_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # 분할 진입 개월 수(0=끔): k개월차 매수 예산을 k/N로 캡.
+    ramp_in_months: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
     sleeves_json: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=text("CURRENT_TIMESTAMP"), nullable=False

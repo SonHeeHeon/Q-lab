@@ -98,6 +98,7 @@ class _AccountCardState extends ConsumerState<_AccountCard> {
     String? profileType,
     bool? quantEnabled,
     List<SleeveConfig>? sleeves,
+    int? rampInMonths,
   }) async {
     setState(() => _saving = true);
     try {
@@ -106,6 +107,7 @@ class _AccountCardState extends ConsumerState<_AccountCard> {
             profileType: profileType,
             quantEnabled: quantEnabled,
             sleeves: sleeves,
+            rampInMonths: rampInMonths,
           );
       ref.invalidate(accountsProvider);
       if (mounted && sleeves != null) {
@@ -293,6 +295,35 @@ class _AccountCardState extends ConsumerState<_AccountCard> {
                     : (t) {
                         if (t != null) _patch(profileType: t);
                       },
+              ),
+            ],
+          ),
+          Row(
+            children: [
+              const Text('분할 진입', style: TextStyle(fontSize: 13)),
+              const SizedBox(width: 12),
+              DropdownButton<int>(
+                value: const [0, 3, 6, 12].contains(account.rampInMonths)
+                    ? account.rampInMonths
+                    : 0,
+                items: const [
+                  DropdownMenuItem(value: 0, child: Text('안 함(일괄)')),
+                  DropdownMenuItem(value: 3, child: Text('3개월')),
+                  DropdownMenuItem(value: 6, child: Text('6개월')),
+                  DropdownMenuItem(value: 12, child: Text('12개월')),
+                ],
+                onChanged: _saving
+                    ? null
+                    : (v) {
+                        if (v != null) _patch(rampInMonths: v);
+                      },
+              ),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  '퀀트 ON 후 N개월에 걸쳐 매수 예산을 단계 투입(매도는 즉시)',
+                  style: TextStyle(fontSize: 11, color: Colors.grey),
+                ),
               ),
             ],
           ),

@@ -246,6 +246,54 @@ def full_rebalance_proposals(
     return sorted(drafts, key=lambda d: 0 if d.side == "SELL" else 1)
 
 
+def ramp_cap(
+    enabled_at: datetime | None, months: int, *, now: datetime
+) -> float:
+    """분할 진입 캡 — 퀀트 ON 후 k개월차(1-base)에 min(1, k/months).
+
+    months<=0 또는 enabled_at 미기록(레거시 ON)이면 캡 없음(1.0).
+    """
+    if months <= 0 or enabled_at is None:
+        return 1.0
+    elapsed = (now.year - enabled_at.year) * 12 + (now.month - enabled_at.month)
+    k = max(1, elapsed + 1)
+    return min(1.0, k / months)
+
+
+def apply_ramp_cap(
+    drafts: list[ProposalDraft],
+    *,
+    cap: float,
+    sleeve_nav: float,
+    holdings_value: float,
+) -> list[ProposalDraft]:
+    """매수 예산을 cap×NAV − 현 보유가치로 제한 (순수).
+
+    SELL(손절·청산 포함)은 절대 건드리지 않는다 — ramp-in은 신규 자금 투입
+    속도만 늦추는 장치. BUY는 순서대로 예산에 맞춰 수량 절삭(0이면 제거).
+    """
+    if cap >= 1.0:
+        return drafts
+    budget = max(0.0, cap * sleeve_nav - holdings_value)
+    out: list[ProposalDraft] = []
+    for d in drafts:
+        if d.side != "BUY":
+            out.append(d)
+            continue
+        if budget <= 0 or d.last_price <= 0:
+            continue
+        affordable = min(d.qty, int(budget // d.last_price))
+        if affordable <= 0:
+            continue
+        budget -= affordable * d.last_price
+        out.append(
+            d if affordable == d.qty
+            else ProposalDraft(d.stock_code, d.side, affordable, d.last_price,
+                               {**d.reason, "ramp_capped": True})
+        )
+    return out
+
+
 def _sleeve_scope_codes(
     universe: str,
     positions: dict[str, int],
@@ -405,6 +453,7 @@ async def run_proposal_generation(
     send_telegram: bool = True,
     nav_weight: float | None = None,
     prefetched_balance: Any | None = None,
+    ramp_cap_value: float = 1.0,
 ) -> dict:
     """제안 생성 본체 — 브로커 보유 조회 → 슬리브 스코핑 → 규칙/전체 diff → INSERT → 텔레그램.
 
@@ -572,6 +621,11 @@ async def run_proposal_generation(
     drafts = [d for d in drafts if d.qty > 0 and d.last_price > 0]
     # 거절 존중: 이번 주기 내 명시적 거절 (종목, 방향)은 재제안 억제(위험규칙 예외).
     drafts = _filter_rejected(drafts, await _rejected_keys(account, as_of))
+    # 분할 진입(ramp-in): 매수 예산을 cap×NAV로 제한 (SELL 무변경).
+    drafts = apply_ramp_cap(
+        drafts, cap=ramp_cap_value, sleeve_nav=sleeve_nav,
+        holdings_value=sleeve_holdings_value,
+    )
     for draft in drafts:
         if draft.side != "SELL":
             continue
@@ -624,6 +678,7 @@ async def run_carryover_generation(
     account_type: AccountType,
     nav_weight: float,
     send_telegram: bool = True,
+    ramp_cap_value: float = 1.0,
 ) -> dict:
     """비월초 이월 재제안 — 이번 주기 저장 목표 vs 실보유의 잔여 diff.
 
@@ -673,6 +728,11 @@ async def run_carryover_generation(
     drafts = build_carryover_drafts(target, scoped, prices)
     drafts = [d for d in drafts if d.qty > 0 and d.last_price > 0]
     drafts = _filter_rejected(drafts, await _rejected_keys(account, as_of))
+    scoped_value = sum(scoped[c] * prices.get(c, 0.0) for c in scoped)
+    drafts = apply_ramp_cap(
+        drafts, cap=ramp_cap_value, sleeve_nav=sleeve_nav,
+        holdings_value=scoped_value,
+    )
     inserted = await _insert_proposals(
         drafts, strategy=strategy, account=account, as_of=as_of,
     )

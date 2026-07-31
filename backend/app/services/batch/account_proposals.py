@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 
 from sqlalchemy import select
 
@@ -22,6 +23,7 @@ from backend.app.services.batch.proposal_generator import (
     ProposalDraft,
     _insert_proposals,
     _is_month_start,
+    ramp_cap,
     run_carryover_generation,
     run_proposal_generation,
 )
@@ -161,6 +163,12 @@ async def run_all_account_proposals(*, send_telegram: bool = True) -> dict:
 
         account = AccountType(profile.account_type)
         as_of = latest_research_price_date()
+        # 분할 진입 캡 — 퀀트 ON 후 경과 개월 기준 (0/미기록=캡 없음)
+        cap = ramp_cap(
+            profile.quant_enabled_at,
+            int(profile.ramp_in_months or 0),
+            now=datetime.now(),
+        )
         acct_result: dict[str, dict] = {}
         for sleeve in sleeves:
             label = sleeve.get("name") or f"hold:{sleeve.get('code')}"
@@ -178,6 +186,7 @@ async def run_all_account_proposals(*, send_telegram: bool = True) -> dict:
                             account_type=account,
                             nav_weight=float(sleeve["weight"]),
                             send_telegram=send_telegram,
+                            ramp_cap_value=cap,
                         )
                         continue
                     acct_result[label] = await run_proposal_generation(
@@ -186,6 +195,7 @@ async def run_all_account_proposals(*, send_telegram: bool = True) -> dict:
                         full_rebalance=monthly_rotation,
                         nav_weight=float(sleeve["weight"]),
                         send_telegram=send_telegram,
+                        ramp_cap_value=cap,
                     )
                 else:
                     acct_result[label] = await _run_hold_sleeve(
