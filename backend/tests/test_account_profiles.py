@@ -41,6 +41,46 @@ def test_validate_sleeves_rejects_unknown_type():
         validate_sleeves([{"type": "magic", "weight": 1.0}])
 
 
+def test_validate_sleeves_rejects_disallowed_universe_for_pension():
+    # 연금저축은 개별주식 전략(KOSPI200 유니버스) 불가
+    with pytest.raises(ValueError):
+        validate_sleeves(
+            [{"type": "strategy", "name": "value_v1", "weight": 1.0}],
+            profile_type="PENSION",
+        )
+
+
+def test_validate_sleeves_rejects_risk_code_for_dc_hold():
+    # DC/IRP hold 코드는 안전(safe) allowlist만 — 069500은 risk 분류
+    with pytest.raises(ValueError):
+        validate_sleeves(
+            [
+                {"type": "strategy", "name": "dc_risk_rotation_kr", "weight": 0.68},
+                {"type": "hold", "code": "069500", "weight": 0.32},
+            ],
+            profile_type="DC",
+        )
+
+
+def test_validate_sleeves_accepts_dc_default_composition():
+    out = validate_sleeves(
+        [
+            {"type": "strategy", "name": "dc_risk_rotation_kr", "weight": 0.68},
+            {"type": "hold", "code": "153130", "weight": 0.32},
+        ],
+        profile_type="DC",
+    )
+    assert len(out) == 2
+
+
+def test_available_sleeves_pension_filters_universe():
+    from backend.app.services.accounts.profiles import available_sleeves
+
+    names = {s["name"] for s in available_sleeves("PENSION")}
+    assert "dc_risk_rotation_kr" in names
+    assert "value_v1" not in names  # KOSPI200(개별주식) 제외
+
+
 def test_validate_sleeves_normalizes_rounding():
     out = validate_sleeves([
         {"type": "strategy", "name": "etf_rotation_kr", "weight": 0.333},

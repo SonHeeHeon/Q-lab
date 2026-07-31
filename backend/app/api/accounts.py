@@ -15,6 +15,8 @@ from sqlalchemy import select
 from backend.app.core.config import settings
 from backend.app.schemas.portfolio import ApiEnvelope
 from backend.app.services.accounts.profiles import (
+    HOLD_ALLOWED,
+    available_sleeves,
     ensure_account_profiles,
     is_live_quant_unlocked,
     validate_sleeves,
@@ -48,7 +50,8 @@ def apply_account_patch(
         profile.profile_type = patch.profile_type
     if patch.sleeves is not None:
         profile.sleeves_json = json.dumps(
-            validate_sleeves(patch.sleeves), ensure_ascii=False
+            validate_sleeves(patch.sleeves, profile_type=profile.profile_type),
+            ensure_ascii=False,
         )
     if patch.quant_enabled is not None:
         if (
@@ -78,6 +81,8 @@ def _serialize(profile: AccountProfile) -> dict:
         "quant_enabled": profile.quant_enabled,
         "connected": _connected(profile),
         "sleeves": json.loads(profile.sleeves_json),
+        "available_sleeves": available_sleeves(profile.profile_type),
+        "hold_allowed": HOLD_ALLOWED.get(profile.profile_type, True),
     }
 
 

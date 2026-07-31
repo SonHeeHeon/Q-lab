@@ -73,10 +73,77 @@ def default_sleeves(account_key: str) -> list[dict]:
     raise ValueError(f"unknown profile type: {profile}")
 
 
-def validate_sleeves(sleeves: list[dict]) -> list[dict]:
-    """형식·합계 검증 + 정규화. 실패 시 ValueError(사용자 메시지)."""
+# 프로파일 타입 → 슬리브 전략에 허용되는 유니버스. 계좌 규정(연금저축 개별주식
+# 불가, DC/IRP는 퇴직연금 허용 ETF만, Toss는 US만)을 서버가 강제한다.
+ALLOWED_UNIVERSES: dict[str, set[str]] = {
+    "PERSONAL": {"KOSPI200", "KOSPI_TOP100", "KOSDAQ150", "KOSPI_ALL",
+                 "KOSDAQ_ALL", "ETF_KR"},
+    "ISA": {"KOSPI200", "KOSPI_TOP100", "KOSDAQ150", "KOSPI_ALL",
+            "KOSDAQ_ALL", "ETF_KR"},
+    "DC": {"ETF_KR_DC_RISK"},
+    "IRP": {"ETF_KR_DC_RISK"},
+    "PENSION": {"ETF_KR", "ETF_KR_DC_RISK"},
+    "US": {"NASDAQ100", "US_LARGE", "ETF_US"},
+}
+
+# 고정보유(hold) 슬리브 지원 여부 — US(Toss)는 KR 코드 보유 개념이 없어 제외.
+HOLD_ALLOWED: dict[str, bool] = {
+    "PERSONAL": True, "ISA": True, "DC": True, "IRP": True,
+    "PENSION": True, "US": False,
+}
+
+
+def _strategy_universe(name: str) -> str | None:
+    try:
+        return load_strategy(name).universe
+    except Exception:  # noqa: BLE001 — 미존재/파싱 실패 = 검증 실패로 처리
+        return None
+
+
+def available_sleeves(profile_type: str) -> list[dict]:
+    """이 프로파일에 추가 가능한 전략 목록 (name·universe·description).
+
+    전략 yaml을 글롭(private 우선 — load_strategy와 동일 섀도잉)해 허용
+    유니버스로 필터. 계좌 화면 '슬리브 추가' 바텀시트가 소비한다.
+    """
+    import yaml
+
+    from backend.app.services.batch.daily_analysis import (
+        PRIVATE_STRATEGY_DIR,
+        STRATEGY_DIR,
+    )
+
+    allowed = ALLOWED_UNIVERSES.get(profile_type, set())
+    seen: dict[str, dict] = {}
+    for directory in (PRIVATE_STRATEGY_DIR, STRATEGY_DIR):
+        if not directory.exists():
+            continue
+        for path in sorted(directory.glob("*.yaml")):
+            name = path.stem
+            if name in seen:
+                continue
+            try:
+                with path.open("r", encoding="utf-8") as fh:
+                    payload = yaml.safe_load(fh) or {}
+            except Exception:  # noqa: BLE001 — 깨진 yaml은 목록에서 제외
+                continue
+            if payload.get("universe") in allowed:
+                seen[name] = {
+                    "name": name,
+                    "universe": payload.get("universe"),
+                    "description": (payload.get("description") or "")[:120],
+                }
+    return list(seen.values())
+
+
+def validate_sleeves(
+    sleeves: list[dict], profile_type: str | None = None
+) -> list[dict]:
+    """형식·합계 검증 + 정규화. ``profile_type``이 주어지면 계좌 규정
+    (허용 유니버스·hold 규칙)도 검사. 실패 시 ValueError(사용자 메시지)."""
     if not sleeves:
         raise ValueError("슬리브가 비어 있습니다")
+    allowed = ALLOWED_UNIVERSES.get(profile_type) if profile_type else None
     total = 0.0
     for s in sleeves:
         kind = s.get("type")
@@ -86,10 +153,26 @@ def validate_sleeves(sleeves: list[dict]) -> list[dict]:
         if kind == "strategy":
             if not s.get("name"):
                 raise ValueError("strategy 슬리브에 name이 없습니다")
+            if allowed is not None:
+                universe = _strategy_universe(s["name"])
+                if universe not in allowed:
+                    raise ValueError(
+                        f"{profile_type} 계좌에는 '{s['name']}'"
+                        f"(universe={universe}) 전략을 쓸 수 없습니다"
+                    )
         elif kind == "hold":
             code = s.get("code", "")
             if not (isinstance(code, str) and code):
                 raise ValueError("hold 슬리브에 code가 없습니다")
+            if profile_type is not None and not HOLD_ALLOWED.get(profile_type, True):
+                raise ValueError(f"{profile_type} 계좌는 고정보유 슬리브 미지원")
+            if profile_type in ("DC", "IRP"):
+                from research.universe.dc_kis import load_dc_allowlist
+
+                if load_dc_allowlist().get(code) != "safe":
+                    raise ValueError(
+                        f"DC/IRP 고정보유는 안전자산 allowlist 코드만 가능: {code}"
+                    )
         else:
             raise ValueError(f"알 수 없는 슬리브 타입: {kind!r}")
         total += float(weight)
