@@ -7,7 +7,9 @@ library;
 
 import 'dart:math' show min, max;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
@@ -638,8 +640,13 @@ class _CandleChart extends ConsumerStatefulWidget {
 class _CandleChartState extends ConsumerState<_CandleChart> {
   /// Hard ceiling on in-memory bars per interval — pan pages back until hit.
   static const _maxBars = 600;
-  static const _slotWidth = 8.0;
   static const _chartHeight = 220.0;
+  static const _defaultSlotWidth = 8.0;
+  static const _minSlotWidth = 4.0;
+  static const _maxSlotWidth = 24.0;
+
+  /// 봉 하나가 차지하는 가로 폭(px) — 줌이 이 값을 바꾼다(4~24).
+  double _slotWidth = _defaultSlotWidth;
 
   _Interval _interval = _Interval.day;
   final Map<_Interval, List<Candle>> _cache = {};
@@ -760,6 +767,35 @@ class _CandleChartState extends ConsumerState<_CandleChart> {
     }
   }
 
+  // ── Zoom ────────────────────────────────────────────────────────────────
+
+  /// 화면 중앙을 앵커로 봉 폭을 [factor]배 조정 (4~24px clamp).
+  void _applyZoom(double factor) {
+    final old = _slotWidth;
+    final next = (old * factor).clamp(_minSlotWidth, _maxSlotWidth);
+    if (next == old) return;
+    final scale = next / old;
+    final hasClients = _scrollController.hasClients;
+    final viewport = hasClients
+        ? _scrollController.position.viewportDimension
+        : 0.0;
+    final center = (hasClients ? _scrollController.offset : 0.0) + viewport / 2;
+    setState(() => _slotWidth = next);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scrollController.hasClients) return;
+      final target = (center * scale - viewport / 2)
+          .clamp(0.0, _scrollController.position.maxScrollExtent);
+      _scrollController.jumpTo(target);
+    });
+  }
+
+  void _resetZoom() {
+    if (_slotWidth != _defaultSlotWidth) {
+      setState(() => _slotWidth = _defaultSlotWidth);
+    }
+    _jumpToLatest();
+  }
+
   // ── Build ────────────────────────────────────────────────────────────────
 
   @override
@@ -771,7 +807,26 @@ class _CandleChartState extends ConsumerState<_CandleChart> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _IntervalSelector(current: _interval, onSelect: _onSelectInterval),
+        Row(
+          children: [
+            Expanded(
+              child: _IntervalSelector(
+                  current: _interval, onSelect: _onSelectInterval),
+            ),
+            IconButton(
+              visualDensity: VisualDensity.compact,
+              tooltip: '축소 (Ctrl/⌘+휠, 더블탭=초기화)',
+              icon: const Icon(Icons.zoom_out, size: 18),
+              onPressed: () => _applyZoom(1 / 1.3),
+            ),
+            IconButton(
+              visualDensity: VisualDensity.compact,
+              tooltip: '확대',
+              icon: const Icon(Icons.zoom_in, size: 18),
+              onPressed: () => _applyZoom(1.3),
+            ),
+          ],
+        ),
         const SizedBox(height: 10),
         SizedBox(
           height: _chartHeight,
@@ -787,19 +842,45 @@ class _CandleChartState extends ConsumerState<_CandleChart> {
                       : Stack(
                           children: [
                             ClipRect(
-                              child: SingleChildScrollView(
-                                controller: _scrollController,
-                                scrollDirection: Axis.horizontal,
-                                child: RepaintBoundary(
-                                  child: CustomPaint(
-                                    size: Size(totalWidth, _chartHeight),
-                                    painter: _CandlestickPainter(
-                                      candles: candles,
-                                      slotWidth: _slotWidth,
-                                      upColor: Colors.redAccent,
-                                      downColor: Colors.blueAccent,
-                                      gridColor: theme.colorScheme.outlineVariant
-                                          .withValues(alpha: 0.4),
+                              // 줌: Ctrl/⌘+휠, 더블탭 리셋. 팬: 드래그(마우스 포함).
+                              child: Listener(
+                                onPointerSignal: (signal) {
+                                  if (signal is! PointerScrollEvent) return;
+                                  final keys = HardwareKeyboard.instance;
+                                  if (!keys.isControlPressed &&
+                                      !keys.isMetaPressed) {
+                                    return;
+                                  }
+                                  _applyZoom(
+                                      signal.scrollDelta.dy < 0 ? 1.15 : 1 / 1.15);
+                                },
+                                child: GestureDetector(
+                                  onDoubleTap: _resetZoom,
+                                  child: ScrollConfiguration(
+                                    // 데스크톱 마우스 드래그로도 구간 이동 가능하게
+                                    behavior: ScrollConfiguration.of(context)
+                                        .copyWith(
+                                      dragDevices:
+                                          PointerDeviceKind.values.toSet(),
+                                      scrollbars: false,
+                                    ),
+                                    child: SingleChildScrollView(
+                                      controller: _scrollController,
+                                      scrollDirection: Axis.horizontal,
+                                      child: RepaintBoundary(
+                                        child: CustomPaint(
+                                          size: Size(totalWidth, _chartHeight),
+                                          painter: _CandlestickPainter(
+                                            candles: candles,
+                                            slotWidth: _slotWidth,
+                                            upColor: Colors.redAccent,
+                                            downColor: Colors.blueAccent,
+                                            gridColor: theme
+                                                .colorScheme.outlineVariant
+                                                .withValues(alpha: 0.4),
+                                          ),
+                                        ),
+                                      ),
                                     ),
                                   ),
                                 ),
