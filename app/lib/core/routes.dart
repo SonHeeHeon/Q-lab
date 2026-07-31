@@ -38,6 +38,7 @@ import '../presentation/stocks/stock_detail_screen.dart';
 import '../presentation/stocks/stock_search_screen.dart';
 import '../presentation/trade_journal/trade_journal_screen.dart';
 import '../presentation/accounts/accounts_screen.dart';
+import '../presentation/portfolio/allocation_screen.dart';
 import '../presentation/watchlist/watchlist_screen.dart';
 
 class NavDestination {
@@ -71,7 +72,16 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (context, state, child) => AppShell(location: state.matchedLocation, child: child),
         routes: [
           GoRoute(path: '/', builder: (_, __) => const HomeScreen()),
-          GoRoute(path: '/portfolio', builder: (_, __) => const PortfolioScreen()),
+          GoRoute(
+            path: '/portfolio',
+            builder: (_, __) => const PortfolioScreen(),
+            routes: [
+              GoRoute(
+                path: 'allocation',
+                builder: (_, __) => const AllocationScreen(),
+              ),
+            ],
+          ),
           GoRoute(path: '/accounts', builder: (_, __) => const AccountsScreen()),
           GoRoute(
             path: '/stocks',

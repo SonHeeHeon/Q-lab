@@ -8,6 +8,7 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
 import '../../core/theme.dart';
@@ -61,6 +62,11 @@ class PortfolioScreen extends ConsumerWidget {
       appBar: AppBar(
         title: const Text('포트폴리오'),
         actions: [
+          IconButton(
+            tooltip: '자산 배분(파이)',
+            icon: const Icon(Icons.pie_chart_outline),
+            onPressed: () => context.go('/portfolio/allocation'),
+          ),
           IconButton(
             tooltip: '새로고침',
             icon: const Icon(Icons.refresh),
