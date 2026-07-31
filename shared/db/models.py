@@ -255,6 +255,30 @@ class LLMCache(ServiceBase):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
+class AccountProfile(ServiceBase):
+    """계좌별 퀀트 프로파일 — 자격증명은 env, 메타만 DB (A안).
+
+    account_key = "KIS:REAL" | "TOSS:MAIN" 형식. sleeves_json은
+    [{"type":"strategy","name":...,"weight":...}|{"type":"hold","code":...,
+    "weight":...}] 직렬화 문자열. quant_enabled 기본 false — 라이브 잠금
+    (Setting live_quant_unlocked)이 풀리기 전엔 PAPER 외 계좌는 켤 수 없다.
+    """
+
+    __tablename__ = "account_profiles"
+
+    account_key: Mapped[str] = mapped_column(Text, primary_key=True)
+    broker: Mapped[str] = mapped_column(Text, nullable=False)
+    account_type: Mapped[str | None] = mapped_column(Text)
+    profile_type: Mapped[str] = mapped_column(Text, nullable=False)
+    quant_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("0")
+    )
+    sleeves_json: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=text("CURRENT_TIMESTAMP"), nullable=False
+    )
+
+
 class Setting(ServiceBase):
     __tablename__ = "settings"
 
