@@ -279,6 +279,29 @@ class AccountProfile(ServiceBase):
     )
 
 
+class RebalanceTarget(ServiceBase):
+    """리밸런스 주기(월) 목표 포트폴리오 — 미이행 이월(carryover) 재제안용.
+
+    월초 full_rebalance 제안 생성 시 목표 수량 맵을 저장하고, 비월초에도
+    실보유와의 잔여 diff가 남아 있으면 이월 제안을 만든다. period는 YYYY-MM.
+    """
+
+    __tablename__ = "rebalance_targets"
+    __table_args__ = (
+        UniqueConstraint("account_type", "strategy_name", "period"),
+        {"sqlite_autoincrement": True},
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_type: Mapped[str] = mapped_column(Text, nullable=False)
+    strategy_name: Mapped[str] = mapped_column(Text, nullable=False)
+    period: Mapped[str] = mapped_column(Text, nullable=False)
+    target_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=text("CURRENT_TIMESTAMP"), nullable=False
+    )
+
+
 class Setting(ServiceBase):
     __tablename__ = "settings"
 

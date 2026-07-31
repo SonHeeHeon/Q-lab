@@ -56,7 +56,7 @@ from research.backtest.engine import (
 from research.backtest.macro_data import load_regime_series
 from research.backtest.regime import compute_regime
 from research.backtest.tax_kr import classify_kr_instrument, estimate_sell_tax
-from shared.db.models import OrderProposal, Setting
+from shared.db.models import OrderProposal, RebalanceTarget, Setting
 from shared.db.session import research_db_path, service_session
 from shared.domain.account import AccountType
 from shared.domain.strategy import StrategyDefinition
@@ -246,6 +246,101 @@ def full_rebalance_proposals(
     return sorted(drafts, key=lambda d: 0 if d.side == "SELL" else 1)
 
 
+def build_carryover_drafts(
+    target: dict[str, int],
+    positions: dict[str, int],
+    prices: dict[str, float],
+) -> list[ProposalDraft]:
+    """저장된 주기 목표 vs 현 보유의 잔여 diff → 이월 제안 (순수).
+
+    full_rebalance_proposals와 동일 시맨틱(SELL 먼저)이되, 목표를 다시
+    계산하지 않고 월초에 저장된 목표 수량을 그대로 쓴다. 가격 없는 코드는
+    스킵(다음 날 재시도).
+    """
+    drafts: list[ProposalDraft] = []
+    for code in sorted(set(positions) | set(target)):
+        price = prices.get(code)
+        if not price or price <= 0:
+            continue
+        delta = target.get(code, 0) - positions.get(code, 0)
+        if delta == 0:
+            continue
+        side = "BUY" if delta > 0 else "SELL"
+        drafts.append(
+            ProposalDraft(
+                code, side, abs(delta), price, {"rule": "REBALANCE_CARRYOVER"}
+            )
+        )
+    return sorted(drafts, key=lambda d: 0 if d.side == "SELL" else 1)
+
+
+def carryover_residual_notional(
+    target: dict[str, int],
+    positions: dict[str, int],
+    prices: dict[str, float],
+) -> float:
+    """이월 잔여 diff의 노셔널 합 — 발동 임계(슬리브 NAV 1%) 판정용 (순수)."""
+    total = 0.0
+    for code in set(positions) | set(target):
+        price = prices.get(code)
+        if not price or price <= 0:
+            continue
+        total += abs(target.get(code, 0) - positions.get(code, 0)) * price
+    return total
+
+
+async def _save_rebalance_target(
+    account: AccountType, strategy_name: str, as_of: Date, target: dict[str, int]
+) -> None:
+    """월초 full_rebalance의 목표 수량 맵을 (계좌, 전략, YYYY-MM)로 upsert."""
+    period = as_of.strftime("%Y-%m")
+    async with service_session() as session:
+        row = (
+            await session.execute(
+                select(RebalanceTarget)
+                .where(RebalanceTarget.account_type == account.value)
+                .where(RebalanceTarget.strategy_name == strategy_name)
+                .where(RebalanceTarget.period == period)
+            )
+        ).scalars().first()
+        payload = json.dumps(target, ensure_ascii=False)
+        if row is None:
+            session.add(
+                RebalanceTarget(
+                    account_type=account.value,
+                    strategy_name=strategy_name,
+                    period=period,
+                    target_json=payload,
+                )
+            )
+        else:
+            row.target_json = payload
+        await session.commit()
+
+
+async def load_rebalance_target(
+    account: AccountType, strategy_name: str, as_of: Date
+) -> dict[str, int] | None:
+    """이번 주기(YYYY-MM)의 저장 목표 — 없으면 None (이월 스킵)."""
+    period = as_of.strftime("%Y-%m")
+    async with service_session() as session:
+        row = (
+            await session.execute(
+                select(RebalanceTarget)
+                .where(RebalanceTarget.account_type == account.value)
+                .where(RebalanceTarget.strategy_name == strategy_name)
+                .where(RebalanceTarget.period == period)
+            )
+        ).scalars().first()
+    if row is None:
+        return None
+    try:
+        loaded = json.loads(row.target_json)
+        return {str(k): int(v) for k, v in loaded.items()}
+    except (ValueError, AttributeError):
+        return None
+
+
 async def run_proposal_generation(
     *,
     strategy_name: str | None = None,
@@ -410,6 +505,13 @@ async def run_proposal_generation(
             exposure=confirmed_exposure if confirmed_exposure is not None else 1.0,
             slots=slots,
         )
+        # 이월(carryover)용 주기 목표 저장 — 미이행분을 비월초에도 재제안 가능하게.
+        target_map = _allocate_equal_weight(
+            selected, nav=sleeve_nav, prices=prices,
+            exposure=confirmed_exposure if confirmed_exposure is not None else 1.0,
+            slots=slots,
+        )
+        await _save_rebalance_target(account, strategy.name, as_of, target_map)
     else:
         drafts = build_rule_proposals(
             strategy=strategy, positions=sleeve_positions,
