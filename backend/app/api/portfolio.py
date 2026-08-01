@@ -140,6 +140,17 @@ async def get_unified_portfolio(
     )
 
 
+@router.get("/ai-prompt", response_model=ApiEnvelope[dict])
+async def get_ai_prompt() -> ApiEnvelope[dict]:
+    """AI 상담 프롬프트 — 정적 템플릿 + 실시간 계좌 데이터 (LLM 호출 없음).
+
+    /{account_type} 캐치올보다 먼저 등록되어야 한다(경로 매칭 순서).
+    """
+    from backend.app.services.accounts.ai_prompt import build_ai_prompt
+
+    return ApiEnvelope(data={"prompt": await build_ai_prompt()}, error=None)
+
+
 @router.get("/{account_type}", response_model=PortfolioEnvelope)
 async def get_portfolio_account(
     account_type: AccountType,
