@@ -20,10 +20,60 @@ from backend.app.services.notify.telegram import (
     TelegramSendResult,
     send_markdown,
 )
-from shared.db.models import BatchAnalysisResult
+from shared.db.models import BatchAnalysisResult, Setting
 from shared.db.session import research_db_path, service_session
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 PROMPTS_DIR = PROJECT_ROOT / "backend" / "app" / "services" / "llm" / "prompts"
+
+# LLM 코멘터리 실행 정책 — "on_view"(기본): 사용자가 인사이트를 조회할 때 1회
+# 생성(같은 날 재조회는 저장분 반환, 비용 절감). "scheduled": 크론이 매일 생성.
+ON_VIEW_NOTICE = (
+    "LLM 코멘터리는 '조회 시 생성' 모드입니다 — 앱 인사이트 탭을 열면 "
+    "그날 1회 생성됩니다."
+)
+
+
+async def llm_commentary_mode() -> str:
+    """Setting llm_commentary_mode — 'scheduled' 외의 값/부재는 'on_view'."""
+    async with service_session() as session:
+        row = await session.get(Setting, "llm_commentary_mode")
+    if row is not None and str(row.value).strip().lower() == "scheduled":
+        return "scheduled"
+    return "on_view"
+
+
+async def generate_and_store_commentary(
+    analysis_date: Date, strategy_name: str, *, limit: int = 10
+) -> bool:
+    """코멘터리 생성→(analysis_date, strategy) 키로 저장 — 크론·조회 트리거 공용.
+
+    성공 True, 실패(예산 초과·LLM 오류 등)는 로그 후 False — 실패 시 저장하지
+    않아 다음 조회가 재시도할 수 있다.
+    """
+    rows = await _load_analysis_rows(analysis_date, strategy_name, limit)
+    stocks = await asyncio.to_thread(_hydrate_stocks, rows)
+    if not stocks:
+        logger.info(
+            "commentary skipped — no analysis rows (%s, %s)",
+            analysis_date, strategy_name,
+        )
+        return False
+    prompt = render_undervalued_prompt(
+        analysis_date=analysis_date, strategy_name=strategy_name, stocks=stocks
+    )
+    try:
+        commentary = await complete_cached(
+            prompt, model=settings.LLM_MODEL, max_tokens=900
+        )
+    except Exception:  # noqa: BLE001 — 실패는 재시도 가능해야 함
+        logger.exception("lazy commentary generation failed")
+        return False
+    await _update_commentary(analysis_date, strategy_name, commentary)
+    return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +109,22 @@ async def run_daily_report(
     selected_strategy = strategy_name or settings.DEFAULT_STRATEGY_NAME
     analysis_rows = await _load_analysis_rows(as_of, selected_strategy, limit)
     stocks = await asyncio.to_thread(_hydrate_stocks, analysis_rows)
+
+    # on_view 모드: 크론 경로에선 LLM을 돌리지 않는다 — 조회 트리거(lazy)가
+    # 채울 자리를 비워 두고, 텔레그램 리포트에는 안내 문구만 싣는다.
+    if not strict_llm and await llm_commentary_mode() == "on_view":
+        telegram_result = await _send_daily_report_message(
+            as_of, selected_strategy, stocks, ON_VIEW_NOTICE,
+            send_telegram=send_telegram,
+        )
+        return DailyReportResult(
+            analysis_date=as_of,
+            strategy_name=selected_strategy,
+            stocks=stocks,
+            commentary=ON_VIEW_NOTICE,
+            llm_fallback_used=False,
+            telegram=telegram_result,
+        )
 
     prompt = render_undervalued_prompt(
         analysis_date=as_of,
