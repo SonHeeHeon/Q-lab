@@ -66,9 +66,7 @@ async def generate_and_store_commentary(
         analysis_date=analysis_date, strategy_name=strategy_name, stocks=stocks
     )
     try:
-        commentary = await complete_cached(
-            prompt, model=settings.LLM_MODEL, max_tokens=900
-        )
+        commentary = await complete_cached(prompt, max_tokens=900)
     except Exception:  # noqa: BLE001 — 실패는 재시도 가능해야 함
         logger.exception("lazy commentary generation failed")
         return False
@@ -133,7 +131,7 @@ async def run_daily_report(
     )
     llm_fallback_used = False
     try:
-        commentary = await complete_cached(prompt, model=settings.LLM_MODEL, max_tokens=900)
+        commentary = await complete_cached(prompt, max_tokens=900)
     except Exception as exc:
         if strict_llm:
             raise

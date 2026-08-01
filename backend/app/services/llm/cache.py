@@ -8,7 +8,11 @@ from hashlib import sha256
 from sqlalchemy.dialects.sqlite import insert
 
 from backend.app.core.config import settings
-from backend.app.services.llm.client import LLMClient, get_llm_client
+from backend.app.services.llm.client import (
+    LLMClient,
+    get_llm_client,
+    resolve_llm_overrides,
+)
 from shared.db.models import LLMCache
 from shared.db.session import service_session
 
@@ -27,7 +31,9 @@ async def complete_cached(
 ) -> str:
     """Return cached completion if valid; otherwise call the LLM and cache it."""
 
-    selected_model = model or settings.LLM_MODEL
+    # 설정 화면(DB) 오버라이드 우선 — model 인자를 명시하면 그 값을 존중.
+    db_model, db_api_key = await resolve_llm_overrides()
+    selected_model = model or db_model
     ttl = ttl_hours if ttl_hours is not None else settings.LLM_CACHE_TTL_HOURS
     key = cache_key(selected_model, prompt)
     now = datetime.now()
@@ -39,7 +45,7 @@ async def complete_cached(
         ):
             return cached.response
 
-    client = llm_client or get_llm_client()
+    client = llm_client or get_llm_client(api_key=db_api_key)
     response = await client.complete(prompt, model=selected_model, max_tokens=max_tokens)
     expires_at = now + timedelta(hours=ttl)
 

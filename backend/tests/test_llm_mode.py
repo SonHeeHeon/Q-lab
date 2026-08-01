@@ -36,6 +36,23 @@ async def test_cron_skips_llm_in_on_view(service_sessionmaker, monkeypatch):
     assert result.llm_fallback_used is False
 
 
+async def test_resolve_llm_overrides(service_sessionmaker, monkeypatch):
+    import backend.app.services.llm.client as lc
+
+    monkeypatch.setattr("shared.db.session.service_session", service_sessionmaker)
+    # resolve는 지연 import라 shared.db.session 심볼을 패치
+    model, key = await lc.resolve_llm_overrides()
+    assert model == lc.settings.LLM_MODEL and key is None  # DB 비어있으면 env
+
+    async with service_sessionmaker() as session:
+        session.add(Setting(key="llm_model", value="gpt-5.5"))
+        session.add(Setting(key="openai_api_key", value="sk-test-override"))
+        await session.commit()
+    model, key = await lc.resolve_llm_overrides()
+    assert model == "gpt-5.5"
+    assert key == "sk-test-override"
+
+
 def test_commentary_status_helper():
     from backend.app.api.quant import (
         _commentary_inflight,

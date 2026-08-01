@@ -42,7 +42,6 @@ async def analyze_trade_journal_entry(journal_id: int) -> None:
     try:
         response = await complete_cached(
             prompt,
-            model=settings.LLM_MODEL,
             max_tokens=700,
             ttl_hours=settings.LLM_CACHE_TTL_HOURS,
         )
@@ -70,7 +69,9 @@ async def analyze_trade_journal_entry(journal_id: int) -> None:
             ensure_ascii=False,
         )
         entry.llm_analyzed_at = datetime.now()
-        entry.llm_analysis_model = settings.LLM_MODEL
+        from backend.app.services.llm.client import resolve_llm_overrides
+
+        entry.llm_analysis_model = (await resolve_llm_overrides())[0]
         await session.commit()
 
 

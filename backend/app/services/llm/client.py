@@ -224,10 +224,35 @@ def tokens_used_today(log_path: Path | None = None) -> int:
     return total
 
 
-def get_llm_client() -> LLMClient:
+def get_llm_client(*, api_key: str | None = None) -> LLMClient:
     if settings.LLM_PROVIDER != "openai":
         raise LLMConfigurationError(f"Unsupported LLM_PROVIDER: {settings.LLM_PROVIDER}")
-    return OpenAIClient()
+    return OpenAIClient(api_key=api_key)
+
+
+async def resolve_llm_overrides() -> tuple[str, str | None]:
+    """(모델, API 키 오버라이드) — 설정 화면(DB Setting)이 env를 이긴다.
+
+    2026-08-01 이전엔 설정 화면 저장값이 런타임에 반영되지 않던 반쪽 상태였음.
+    키가 DB에 없으면 None(→ env 키 사용).
+    """
+    from shared.db.models import Setting
+    from shared.db.session import service_session
+
+    async with service_session() as session:
+        model_row = await session.get(Setting, "llm_model")
+        key_row = await session.get(Setting, "openai_api_key")
+    model = (
+        model_row.value.strip()
+        if model_row is not None and str(model_row.value).strip()
+        else settings.LLM_MODEL
+    )
+    api_key = (
+        key_row.value.strip()
+        if key_row is not None and str(key_row.value).strip()
+        else None
+    )
+    return model, api_key
 
 
 def _estimate_token_upper_bound(prompt: str, max_tokens: int) -> int:
