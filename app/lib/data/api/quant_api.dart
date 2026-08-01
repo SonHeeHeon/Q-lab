@@ -43,11 +43,16 @@ class UndervaluedReport {
     required this.analysisDate,
     required this.strategyName,
     required this.items,
+    this.commentaryStatus,
   });
 
   final DateTime analysisDate;
   final String strategyName;
   final List<UndervaluedItem> items;
+
+  /// LLM 코멘터리 상태 — 'ready' | 'generating'(조회 트리거로 생성 중) |
+  /// 'off'. 구버전 서버는 null.
+  final String? commentaryStatus;
 
   factory UndervaluedReport.fromJson(Map<String, dynamic> j) => UndervaluedReport(
         analysisDate: DateTime.parse(j['analysis_date'] as String),
@@ -55,6 +60,7 @@ class UndervaluedReport {
         items: ((j['items'] as List?) ?? const [])
             .map((e) => UndervaluedItem.fromJson(asJsonMap(e)))
             .toList(),
+        commentaryStatus: j['commentary_status'] as String?,
       );
 }
 

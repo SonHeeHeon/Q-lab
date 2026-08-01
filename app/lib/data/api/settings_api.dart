@@ -53,6 +53,7 @@ class AppSettings {
     required this.llmModel,
     required this.llmApiKeyMasked,
     required this.llmCacheTtlHours,
+    this.llmCommentaryMode = 'on_view',
     required this.ratingStrategyName,
     required this.etfStrategyName,
     required this.sleeveEtfWeight,
@@ -67,6 +68,9 @@ class AppSettings {
   final String llmModel;
   final String llmApiKeyMasked;
   final int llmCacheTtlHours;
+
+  /// LLM 실행 정책 — 'on_view'(조회 시 1회 생성, 기본) | 'scheduled'(크론).
+  final String llmCommentaryMode;
 
   /// Strategy preset used by the ratings batch (`backend/app/services/
   /// batch/rating_batch.py`, `Setting` key `rating_strategy_name`). Falls
@@ -95,6 +99,7 @@ class AppSettings {
         llmModel: (j['llm_model'] as String?) ?? 'gpt-4o',
         llmApiKeyMasked: (j['llm_api_key_masked'] as String?) ?? '',
         llmCacheTtlHours: (j['llm_cache_ttl_hours'] as num?)?.toInt() ?? 24,
+        llmCommentaryMode: (j['llm_commentary_mode'] as String?) ?? 'on_view',
         ratingStrategyName:
             (j['rating_strategy_name'] as String?) ?? 'value_v1',
         etfStrategyName:

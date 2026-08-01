@@ -794,12 +794,12 @@ class _TelegramBlockState extends ConsumerState<_TelegramBlock> {
 // LLM (read-only for V1)
 // ---------------------------------------------------------------------------
 
-class _LlmReadOnlyBlock extends StatelessWidget {
+class _LlmReadOnlyBlock extends ConsumerWidget {
   const _LlmReadOnlyBlock({required this.settings});
   final AppSettings settings;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     return Card(
       child: Padding(
@@ -812,6 +812,31 @@ class _LlmReadOnlyBlock extends StatelessWidget {
             Text('API key: ${settings.llmApiKeyMasked.isEmpty ? "(미설정)" : settings.llmApiKeyMasked}',
                 style: theme.textTheme.bodyMedium),
             Text('Cache TTL: ${settings.llmCacheTtlHours}시간', style: theme.textTheme.bodyMedium),
+            const SizedBox(height: 12),
+            Text('AI 코멘터리 실행 방식',
+                style: theme.textTheme.bodyMedium
+                    ?.copyWith(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 6),
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(
+                    value: 'on_view', label: Text('조회 시 생성(기본)')),
+                ButtonSegment(value: 'scheduled', label: Text('매일 자동')),
+              ],
+              selected: {settings.llmCommentaryMode},
+              onSelectionChanged: (selection) async {
+                await ref
+                    .read(settingsApiProvider)
+                    .patch({'llm_commentary_mode': selection.first});
+                ref.invalidate(appSettingsProvider);
+              },
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '조회 시 생성: 인사이트를 열 때 그날 1회만 LLM 실행(같은 날 재조회는 '
+              '캐시 — 비용 절감). 매일 자동: 평일 16:45 크론이 생성.',
+              style: theme.textTheme.bodySmall,
+            ),
             const SizedBox(height: 8),
             Text(
               '⚠️ V1 에서는 LLM 키 편집은 백엔드 .env 에서만 가능합니다. UI 편집은 Phase 5 step ≥ 6에서 활성화됩니다.',

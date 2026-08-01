@@ -102,6 +102,8 @@ class AppSettingsResponse(BaseModel):
     llm_model: str
     llm_api_key_masked: str
     llm_cache_ttl_hours: int
+    # LLM 실행 정책: on_view(조회 시 1회 생성, 기본) | scheduled(크론 매일)
+    llm_commentary_mode: str
     rating_strategy_name: str
     etf_strategy_name: str
     sleeve_etf_weight: float
@@ -136,6 +138,11 @@ async def get_settings(
             rows.get("openai_api_key") or settings.OPENAI_API_KEY.get_secret_value()
         ),
         llm_cache_ttl_hours=int(rows.get("llm_cache_ttl_hours", settings.LLM_CACHE_TTL_HOURS)),
+        llm_commentary_mode=(
+            "scheduled"
+            if str(rows.get("llm_commentary_mode", "")).strip().lower() == "scheduled"
+            else "on_view"
+        ),
         rating_strategy_name=rows.get("rating_strategy_name") or settings.DEFAULT_STRATEGY_NAME,
         etf_strategy_name=rows.get("etf_strategy_name") or settings.DEFAULT_ETF_STRATEGY_NAME,
         sleeve_etf_weight=parse_sleeve_weight(rows.get("sleeve_etf_weight")),
@@ -159,6 +166,7 @@ async def patch_settings(
         "llm_model",
         "openai_api_key",
         "llm_cache_ttl_hours",
+        "llm_commentary_mode",
         "toss_client_id",
         "toss_client_secret",
         "toss_account_seq",

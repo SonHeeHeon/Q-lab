@@ -108,7 +108,7 @@ class _Body extends StatelessWidget {
         Text('🤖 AI 코멘터리',
             style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
         const SizedBox(height: 8),
-        _LlmCommentaryCard(text: topCommentary),
+        _LlmCommentaryCard(text: topCommentary, status: report.commentaryStatus),
         const SizedBox(height: 24),
         Text('📊 저평가 종목 Top ${items.length}',
             style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
@@ -302,20 +302,40 @@ class _MiniHeatmap extends ConsumerWidget {
 // ---------------------------------------------------------------------------
 
 class _LlmCommentaryCard extends StatelessWidget {
-  const _LlmCommentaryCard({required this.text});
+  const _LlmCommentaryCard({required this.text, this.status});
   final String? text;
+
+  /// 'generating'이면 조회 트리거로 지금 만드는 중 — 안내 문구 전환.
+  final String? status;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     if (text == null || text!.trim().isEmpty) {
+      final generating = status == 'generating';
       return Card(
         color: theme.colorScheme.surfaceContainerHighest,
         child: Padding(
           padding: const EdgeInsets.all(16),
-          child: Text(
-            '오늘 생성된 LLM 코멘터리가 없습니다.',
-            style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.outline),
+          child: Row(
+            children: [
+              if (generating) ...[
+                const SizedBox(
+                  width: 14, height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                const SizedBox(width: 10),
+              ],
+              Expanded(
+                child: Text(
+                  generating
+                      ? 'AI 코멘터리 생성 중 — 잠시 후 새로고침하세요.'
+                      : '오늘 생성된 LLM 코멘터리가 없습니다.',
+                  style: theme.textTheme.bodyMedium
+                      ?.copyWith(color: theme.colorScheme.outline),
+                ),
+              ),
+            ],
           ),
         ),
       );
