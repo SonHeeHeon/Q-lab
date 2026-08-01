@@ -36,6 +36,41 @@ async def test_cron_skips_llm_in_on_view(service_sessionmaker, monkeypatch):
     assert result.llm_fallback_used is False
 
 
+def test_commentary_status_helper():
+    from backend.app.api.quant import (
+        _commentary_inflight,
+        _commentary_status_and_maybe_schedule,
+    )
+
+    scheduled: list[str] = []
+    kwargs = dict(
+        mode="on_view", selected_strategy="s", default_strategy="s",
+        selected_date=date(2026, 8, 1), has_rows=True,
+        schedule=scheduled.append,
+    )
+    _commentary_inflight.clear()
+    # 존재하면 ready, 태스크 미등록
+    assert _commentary_status_and_maybe_schedule(
+        has_commentary=True, **kwargs) == "ready"
+    assert scheduled == []
+    # 부재+on_view+기본 전략 → generating, 1회만 예약(중복 가드)
+    assert _commentary_status_and_maybe_schedule(
+        has_commentary=False, **kwargs) == "generating"
+    assert _commentary_status_and_maybe_schedule(
+        has_commentary=False, **kwargs) == "generating"
+    assert len(scheduled) == 1
+    _commentary_inflight.clear()
+    # scheduled 모드·비기본 전략·행 없음 → off
+    assert _commentary_status_and_maybe_schedule(
+        has_commentary=False, **{**kwargs, "mode": "scheduled"}) == "off"
+    assert _commentary_status_and_maybe_schedule(
+        has_commentary=False, **{**kwargs, "selected_strategy": "x"}) == "off"
+    assert _commentary_status_and_maybe_schedule(
+        has_commentary=False, **{**kwargs, "has_rows": False}) == "off"
+    assert len(scheduled) == 1
+    _commentary_inflight.clear()
+
+
 async def test_cron_calls_llm_in_scheduled(service_sessionmaker, monkeypatch):
     monkeypatch.setattr(dr, "service_session", service_sessionmaker)
     monkeypatch.setattr(dr, "latest_research_price_date", lambda: date(2026, 8, 1))
