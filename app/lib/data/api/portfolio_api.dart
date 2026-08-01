@@ -383,6 +383,14 @@ class PortfolioApi {
     return UnifiedPortfolio.fromJson(asJsonMap(res.data));
   }
 
+  /// AI 상담 프롬프트 — 서버가 정적 템플릿에 실시간 계좌 데이터를 채워
+  /// 반환(LLM 호출 없음, 비용 0). 사용자가 복사해 Claude/GPT에 붙여넣는 용도.
+  Future<String> getAiPrompt() async {
+    final dio = _ref.read(dioProvider);
+    final res = await dio.get<dynamic>('/api/portfolio/ai-prompt');
+    return (asJsonMap(res.data)['prompt'] as String?) ?? '';
+  }
+
   Future<TradeReceipt> placeOrder(PlaceOrderRequest req) async {
     final dio = _ref.read(dioProvider);
     final res = await dio.post<dynamic>('/api/portfolio/orders', data: req.toJson());

@@ -7,6 +7,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
@@ -62,6 +63,11 @@ class PortfolioScreen extends ConsumerWidget {
       appBar: AppBar(
         title: const Text('포트폴리오'),
         actions: [
+          IconButton(
+            tooltip: 'AI 상담 프롬프트',
+            icon: const Icon(Icons.psychology_outlined),
+            onPressed: () => _showAiPromptSheet(context, ref),
+          ),
           IconButton(
             tooltip: '자산 배분(파이)',
             icon: const Icon(Icons.pie_chart_outline),
@@ -1124,4 +1130,75 @@ class _ErrorBlock extends StatelessWidget {
       ),
     );
   }
+}
+
+/// AI 상담 프롬프트 시트 — 서버가 현재 계좌 데이터로 채운 프롬프트를 받아
+/// 표시(LLM 무호출·비용 0). 복사해서 Claude/GPT에 붙여넣는 용도.
+void _showAiPromptSheet(BuildContext context, WidgetRef ref) {
+  final future = ref.read(portfolioApiProvider).getAiPrompt();
+  showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    showDragHandle: true,
+    builder: (sheetContext) => DraggableScrollableSheet(
+      expand: false,
+      initialChildSize: 0.7,
+      maxChildSize: 0.95,
+      builder: (_, scrollController) => FutureBuilder<String>(
+        future: future,
+        builder: (ctx, snap) {
+          if (snap.connectionState != ConnectionState.done) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snap.hasError || (snap.data ?? '').isEmpty) {
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text('프롬프트 생성 실패: ${snap.error ?? "빈 응답"}'),
+              ),
+            );
+          }
+          final prompt = snap.data!;
+          return Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text('AI 상담 프롬프트',
+                          style: Theme.of(ctx).textTheme.titleMedium),
+                    ),
+                    FilledButton.icon(
+                      icon: const Icon(Icons.copy, size: 18),
+                      label: const Text('전체 복사'),
+                      onPressed: () async {
+                        await Clipboard.setData(ClipboardData(text: prompt));
+                        if (ctx.mounted) {
+                          ScaffoldMessenger.of(ctx).showSnackBar(
+                            const SnackBar(
+                                content: Text('프롬프트가 복사됐습니다 — '
+                                    'Claude/GPT에 붙여넣으세요')),
+                          );
+                        }
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              Expanded(
+                child: SingleChildScrollView(
+                  controller: scrollController,
+                  padding: const EdgeInsets.all(16),
+                  child: SelectableText(prompt,
+                      style: const TextStyle(fontSize: 13, height: 1.5)),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    ),
+  );
 }
