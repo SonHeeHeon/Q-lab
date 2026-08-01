@@ -8,7 +8,7 @@ import fcntl
 from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from openai import AsyncOpenAI
 
@@ -57,19 +57,23 @@ class OpenAIClient:
     ) -> str:
         reserved_tokens = self._reserve_budget(prompt=prompt, max_tokens=max_tokens)
         started = time.perf_counter()
+        # gpt-5·o 계열: max_tokens 미지원(max_completion_tokens 필수)이고
+        # temperature 커스텀도 거부한다 — 모델군에 맞춰 파라미터 구성.
+        request_kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are a concise Korean equity research assistant.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "max_completion_tokens": max_tokens,
+        }
+        if not model.startswith(("gpt-5", "o")):
+            request_kwargs["temperature"] = 0.2
         try:
-            response = await self.client.chat.completions.create(
-                model=model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a concise Korean equity research assistant.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=max_tokens,
-                temperature=0.2,
-            )
+            response = await self.client.chat.completions.create(**request_kwargs)
         except Exception:
             self._release_reservation(reserved_tokens)
             raise
