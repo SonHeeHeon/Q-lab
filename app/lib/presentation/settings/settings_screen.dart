@@ -794,12 +794,37 @@ class _TelegramBlockState extends ConsumerState<_TelegramBlock> {
 // LLM (read-only for V1)
 // ---------------------------------------------------------------------------
 
-class _LlmReadOnlyBlock extends ConsumerWidget {
+class _LlmReadOnlyBlock extends ConsumerStatefulWidget {
   const _LlmReadOnlyBlock({required this.settings});
   final AppSettings settings;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_LlmReadOnlyBlock> createState() => _LlmReadOnlyBlockState();
+}
+
+class _LlmReadOnlyBlockState extends ConsumerState<_LlmReadOnlyBlock> {
+  static const _presets = ['gpt-5.4-mini', 'gpt-5.4', 'gpt-5.5'];
+  final _keyController = TextEditingController();
+
+  AppSettings get settings => widget.settings;
+
+  @override
+  void dispose() {
+    _keyController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _patch(Map<String, dynamic> kv, String doneMessage) async {
+    await ref.read(settingsApiProvider).patch(kv);
+    ref.invalidate(appSettingsProvider);
+    if (mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(doneMessage)));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Card(
       child: Padding(
@@ -808,9 +833,53 @@ class _LlmReadOnlyBlock extends ConsumerWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text('Provider: ${settings.llmProvider}', style: theme.textTheme.bodyMedium),
-            Text('Model: ${settings.llmModel}', style: theme.textTheme.bodyMedium),
-            Text('API key: ${settings.llmApiKeyMasked.isEmpty ? "(미설정)" : settings.llmApiKeyMasked}',
-                style: theme.textTheme.bodyMedium),
+            Row(
+              children: [
+                Text('Model: ', style: theme.textTheme.bodyMedium),
+                DropdownButton<String>(
+                  value: _presets.contains(settings.llmModel)
+                      ? settings.llmModel
+                      : null,
+                  hint: Text(settings.llmModel),
+                  items: [
+                    for (final m in _presets)
+                      DropdownMenuItem(value: m, child: Text(m)),
+                  ],
+                  onChanged: (m) {
+                    if (m != null) {
+                      _patch({'llm_model': m}, '모델이 $m 로 변경됐습니다');
+                    }
+                  },
+                ),
+              ],
+            ),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _keyController,
+                    obscureText: true,
+                    decoration: InputDecoration(
+                      isDense: true,
+                      labelText: 'OpenAI API 키',
+                      hintText: settings.llmApiKeyMasked.isEmpty
+                          ? '(미설정 — sk-...)'
+                          : '현재: ${settings.llmApiKeyMasked}',
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                FilledButton(
+                  onPressed: () {
+                    final key = _keyController.text.trim();
+                    if (key.isEmpty) return;
+                    _keyController.clear();
+                    _patch({'openai_api_key': key}, 'API 키가 저장됐습니다');
+                  },
+                  child: const Text('저장'),
+                ),
+              ],
+            ),
             Text('Cache TTL: ${settings.llmCacheTtlHours}시간', style: theme.textTheme.bodyMedium),
             const SizedBox(height: 12),
             Text('AI 코멘터리 실행 방식',
@@ -839,7 +908,8 @@ class _LlmReadOnlyBlock extends ConsumerWidget {
             ),
             const SizedBox(height: 8),
             Text(
-              '⚠️ V1 에서는 LLM 키 편집은 백엔드 .env 에서만 가능합니다. UI 편집은 Phase 5 step ≥ 6에서 활성화됩니다.',
+              '모델·API 키는 여기서 바로 변경되며 다음 LLM 호출부터 적용됩니다 '
+              '(.env는 초기 기본값).',
               style: theme.textTheme.bodySmall,
             ),
           ],
