@@ -79,6 +79,8 @@ app/web/
 
 # --- AI / agent tooling (solo project, no need to share) ---
 .omc/
+# 세션 간 공유 보드 = 별도 비공개 레포(q-lab-coord) clone 위치 — 공개 레포로 새지 않게
+.coord/
 **/AGENTS.md
 research/reports/matrix/
 research/strategies/private/
